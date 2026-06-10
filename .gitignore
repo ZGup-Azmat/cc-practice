@@ -1,2 +1,6 @@
 __pycache__/
 .claude/
+build/
+dist/
+pomodoro.db
+*.spec

@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🍅 番茄钟 — 时间记录 + 数据看板</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- ════════════════ 导航栏 ════════════════ -->
+<nav id="navbar">
+  <div class="nav-brand">🍅 番茄钟</div>
+  <div class="nav-tabs">
+    <button class="nav-tab active" data-view="timer">⏱ 计时</button>
+    <button class="nav-tab" data-view="dashboard">📊 看板</button>
+    <button class="nav-tab" data-view="settings">⚙ 设置</button>
+  </div>
+  <div class="nav-actions">
+    <button id="theme-toggle" title="切换深色/浅色模式">🌓</button>
+  </div>
+</nav>
+
+<!-- ════════════════ 计时页 ════════════════ -->
+<div id="view-timer" class="view active">
+
+  <!-- 每日目标进度条 -->
+  <div class="daily-goal-bar" id="daily-goal-bar">
+    <div class="goal-info">
+      <span class="goal-label">🎯 今日目标</span>
+      <span class="goal-text" id="goal-text">0h 0m / 2h 0m</span>
+    </div>
+    <div class="progress-bar-track">
+      <div class="progress-bar-fill" id="goal-progress-fill" style="width:0%"></div>
+    </div>
+    <div class="goal-percent" id="goal-percent">0%</div>
+  </div>
+
+  <!-- 标签/项目选择 -->
+  <div class="tag-selector">
+    <label>📂 标签 / 项目</label>
+    <div class="tag-input-row">
+      <input type="text" id="tag-input" list="tag-suggestions"
+             placeholder="如：编程、阅读、数学（可留空）" autocomplete="off">
+      <datalist id="tag-suggestions"></datalist>
+    </div>
+  </div>
+
+  <!-- 计时器圆环 -->
+  <div class="timer-circle-container">
+    <svg class="timer-svg" viewBox="0 0 300 300">
+      <circle class="timer-ring-bg" cx="150" cy="150" r="130"/>
+      <circle class="timer-ring-fg" id="timer-ring" cx="150" cy="150" r="130"
+              stroke-dasharray="816.8" stroke-dashoffset="0"/>
+      <text class="timer-text" id="timer-text" x="150" y="130" text-anchor="middle">25:00</text>
+      <text class="timer-mode" id="timer-mode" x="150" y="165" text-anchor="middle">🍅 准备开始</text>
+      <text class="timer-phase" id="timer-phase" x="150" y="190" text-anchor="middle"></text>
+    </svg>
+  </div>
+
+  <!-- 控制按钮 -->
+  <div class="timer-controls">
+    <button class="btn btn-primary" id="btn-start">▶  开始</button>
+    <button class="btn btn-secondary" id="btn-stop" disabled>⏹  停止</button>
+    <button class="btn btn-secondary" id="btn-skip" disabled>⏭  跳过休息</button>
+  </div>
+
+  <!-- 当前统计 -->
+  <div class="timer-stats">
+    <span class="stat-item">✅ 已完成 <strong id="pomodoro-count">0</strong> 个番茄</span>
+    <span class="stat-item">📅 今日 <strong id="today-count">0</strong> 个</span>
+  </div>
+</div>
+
+<!-- ════════════════ 看板页 ════════════════ -->
+<div id="view-dashboard" class="view">
+
+  <!-- 子模块标签 -->
+  <div class="dashboard-tabs">
+    <button class="dash-tab active" data-dtab="heatmap">🗓 热力图</button>
+    <button class="dash-tab" data-dtab="trend">📈 趋势折线图</button>
+    <button class="dash-tab" data-dtab="cards">📋 统计卡片</button>
+  </div>
+
+  <!-- 过滤器 -->
+  <div class="dash-filter">
+    <label>筛选标签：</label>
+    <select id="dash-tag-filter">
+      <option value="">全部</option>
+    </select>
+  </div>
+
+  <!-- 模块A：热力图 -->
+  <div id="dash-heatmap" class="dash-panel active">
+    <div class="heatmap-controls">
+      <div class="heatmap-view-toggle">
+        <button class="hm-view-btn active" data-hm="year">年视图</button>
+        <button class="hm-view-btn" data-hm="month">月视图</button>
+      </div>
+      <div class="heatmap-nav">
+        <button id="hm-prev">◀</button>
+        <span id="hm-title">2026</span>
+        <button id="hm-next">▶</button>
+      </div>
+    </div>
+    <div id="heatmap-container"></div>
+    <div class="heatmap-legend">
+      <span>少</span>
+      <span class="hm-legend-0"></span>
+      <span class="hm-legend-1"></span>
+      <span class="hm-legend-2"></span>
+      <span class="hm-legend-3"></span>
+      <span class="hm-legend-4"></span>
+      <span>多</span>
+    </div>
+  </div>
+
+  <!-- 模块B：趋势折线图 -->
+  <div id="dash-trend" class="dash-panel">
+    <div class="trend-controls">
+      <div class="trend-granularity">
+        <button class="trend-btn active" data-gran="day">日</button>
+        <button class="trend-btn" data-gran="week">周</button>
+        <button class="trend-btn" data-gran="month">月</button>
+      </div>
+    </div>
+    <div class="chart-wrapper">
+      <canvas id="trend-canvas"></canvas>
+    </div>
+    <div class="chart-tooltip" id="chart-tooltip"></div>
+  </div>
+
+  <!-- 模块C：统计卡片 -->
+  <div id="dash-cards" class="dash-panel">
+    <div class="cards-grid" id="cards-grid">
+      <div class="stat-card">
+        <div class="card-icon">📅</div>
+        <div class="card-value" id="card-today">0h 0m</div>
+        <div class="card-label">今日专注时长</div>
+        <div class="card-sub" id="card-today-percent">目标 0%</div>
+      </div>
+      <div class="stat-card">
+        <div class="card-icon">📆</div>
+        <div class="card-value" id="card-week">0h 0m</div>
+        <div class="card-label">本周总时长</div>
+        <div class="card-sub" id="card-week-avg">日均 0h 0m</div>
+      </div>
+      <div class="stat-card">
+        <div class="card-icon">📊</div>
+        <div class="card-value" id="card-month">0h 0m</div>
+        <div class="card-label">本月总时长</div>
+        <div class="card-sub" id="card-month-avg">日均 0h 0m</div>
+      </div>
+      <div class="stat-card">
+        <div class="card-icon">🔥</div>
+        <div class="card-value" id="card-streak">0</div>
+        <div class="card-label">连续专注天数</div>
+        <div class="card-sub">streak</div>
+      </div>
+      <div class="stat-card">
+        <div class="card-icon">🏆</div>
+        <div class="card-value" id="card-total">0h 0m</div>
+        <div class="card-label">累计总时长</div>
+        <div class="card-sub">全历史</div>
+      </div>
+      <div class="stat-card">
+        <div class="card-icon">🏷</div>
+        <div class="card-value" id="card-tags">—</div>
+        <div class="card-label">最常用标签 TOP3</div>
+        <div class="card-sub" id="card-tags-sub"></div>
+      </div>
+    </div>
+
+    <!-- 按标签/项目统计明细 -->
+    <div class="tag-breakdown-section">
+      <div class="tag-breakdown-header">
+        <h3>📂 项目标签明细</h3>
+        <select id="tag-period-filter">
+          <option value="all">全部时间</option>
+          <option value="month">本月</option>
+          <option value="week">本周</option>
+          <option value="today">今日</option>
+        </select>
+      </div>
+      <div class="tag-breakdown-total" id="tag-breakdown-grand">
+        总计 0 个番茄 · 0h 0m
+      </div>
+      <div class="tag-breakdown-list" id="tag-breakdown-list">
+        <div class="tag-breakdown-empty">暂无数据，开始第一个番茄吧~</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════ 设置页 ════════════════ -->
+<div id="view-settings" class="view">
+  <div class="settings-card">
+    <h3>⏱ 计时设置</h3>
+    <div class="setting-row">
+      <label>专注时长（分钟）</label>
+      <input type="number" id="set-work" min="1" max="120" value="25">
+    </div>
+    <div class="setting-row">
+      <label>短休息时长（分钟）</label>
+      <input type="number" id="set-short-break" min="1" max="30" value="5">
+    </div>
+    <div class="setting-row">
+      <label>长休息时长（分钟）</label>
+      <input type="number" id="set-long-break" min="1" max="60" value="15">
+    </div>
+    <div class="setting-row">
+      <label>几个番茄后长休息</label>
+      <input type="number" id="set-before-long" min="1" max="10" value="4">
+    </div>
+  </div>
+
+  <div class="settings-card">
+    <h3>🎯 每日目标</h3>
+    <div class="setting-row">
+      <label>每日学习目标（小时）</label>
+      <input type="number" id="set-daily-goal" min="0.5" max="24" step="0.5" value="2">
+    </div>
+  </div>
+
+  <div class="settings-card">
+    <h3>📤 数据管理</h3>
+    <div class="setting-row">
+      <button class="btn btn-secondary" id="btn-export-json">导出 JSON</button>
+      <button class="btn btn-secondary" id="btn-export-csv">导出 CSV</button>
+    </div>
+  </div>
+
+  <button class="btn btn-primary" id="btn-save-settings">💾 保存设置</button>
+</div>
+
+<!-- ════════════════ 反思弹窗 ════════════════ -->
+<div class="modal-overlay" id="reflection-modal">
+  <div class="modal-card">
+    <h3>🍅 番茄完成！</h3>
+    <p class="modal-sub">恭喜完成一个专注周期，来快速记录一下吧~</p>
+
+    <div class="reflection-stars" id="reflection-stars">
+      <span data-star="1">☆</span>
+      <span data-star="2">☆</span>
+      <span data-star="3">☆</span>
+      <span data-star="4">☆</span>
+      <span data-star="5">☆</span>
+    </div>
+
+    <textarea id="reflection-input" rows="3"
+              placeholder="简短反思（可跳过）……"></textarea>
+
+    <div class="modal-buttons">
+      <button class="btn btn-secondary" id="btn-reflection-skip">跳过</button>
+      <button class="btn btn-primary" id="btn-reflection-submit">✓ 提交</button>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════ 撒花容器 ════════════════ -->
+<div id="confetti-container"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

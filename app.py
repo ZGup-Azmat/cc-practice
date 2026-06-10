@@ -1,0 +1,579 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+番茄钟 Pomodoro Timer — 时间记录 + 数据看板
+Python Flask 后端 + SQLite + 系统托盘
+"""
+
+import csv
+import io
+import json
+import os
+import sqlite3
+import sys
+import datetime
+import threading
+import webbrowser
+from pathlib import Path
+
+from flask import Flask, request, jsonify, g
+
+# ── 配置 ──────────────────────────────────────────────────
+# PyInstaller 打包后 __file__ 指向临时目录(关闭即清空)，
+# 必须用 sys.executable 来定位 .exe 所在目录，保证数据持久化
+if getattr(sys, 'frozen', False):
+    BASE_DIR = Path(sys.executable).parent
+else:
+    BASE_DIR = Path(__file__).parent.absolute()
+DB_PATH = BASE_DIR / 'pomodoro.db'
+HOST = '127.0.0.1'
+PORT = 5678
+
+app = Flask(__name__, static_folder='static', static_url_path='')
+
+# ── 数据库 ────────────────────────────────────────────────
+
+def get_db():
+    if 'db' not in g:
+        g.db = sqlite3.connect(str(DB_PATH))
+        g.db.row_factory = sqlite3.Row
+        g.db.execute("PRAGMA journal_mode=WAL")
+    return g.db
+
+@app.teardown_appcontext
+def close_db(exception):
+    db = g.pop('db', None)
+    if db:
+        db.close()
+
+def init_db():
+    db = sqlite3.connect(str(DB_PATH))
+    db.executescript("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS pomodoro_records (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            date            TEXT    NOT NULL,
+            start_time      TEXT    NOT NULL,
+            duration_minutes INTEGER NOT NULL,
+            status          TEXT    NOT NULL CHECK(status IN ('completed','abandoned')),
+            tag             TEXT    DEFAULT '',
+            focus_score     INTEGER DEFAULT NULL,
+            reflection      TEXT    DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_date ON pomodoro_records(date);
+        CREATE INDEX IF NOT EXISTS idx_tag  ON pomodoro_records(tag);
+    """)
+    defaults = {
+        'work_duration':          '25',
+        'short_break_duration':   '5',
+        'long_break_duration':    '15',
+        'pomodoros_before_long':  '4',
+        'daily_goal_minutes':     '120',
+        'theme':                  'light',
+    }
+    for k, v in defaults.items():
+        db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v))
+    db.commit()
+    db.close()
+
+# ── 辅助函数 ──────────────────────────────────────────────
+
+def load_settings(db):
+    rows = db.execute("SELECT key, value FROM settings").fetchall()
+    return {row['key']: row['value'] for row in rows}
+
+# 自动初始化（首次请求时检查） ──────────────────────────────
+_db_initialized = False
+
+@app.before_request
+def ensure_db():
+    global _db_initialized
+    if not _db_initialized:
+        init_db()
+        _db_initialized = True
+
+# ── 路由 ──────────────────────────────────────────────────
+
+@app.route('/')
+def index():
+    return app.send_static_file('index.html')
+
+# --- 设置 API ---
+
+@app.route('/api/settings', methods=['GET'])
+def api_get_settings():
+    db = get_db()
+    settings = load_settings(db)
+    return jsonify(settings)
+
+@app.route('/api/settings', methods=['PUT'])
+def api_update_settings():
+    db = get_db()
+    data = request.get_json()
+    allowed = {
+        'work_duration', 'short_break_duration', 'long_break_duration',
+        'pomodoros_before_long', 'daily_goal_minutes', 'theme'
+    }
+    for key, value in data.items():
+        if key in allowed:
+            db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                       (key, str(value)))
+    db.commit()
+    return jsonify({'ok': True})
+
+# --- 记录 API ---
+
+@app.route('/api/records', methods=['GET'])
+def api_get_records():
+    db = get_db()
+    date_from = request.args.get('from')
+    date_to   = request.args.get('to')
+    tag       = request.args.get('tag')
+    limit     = request.args.get('limit', 100, type=int)
+
+    sql  = "SELECT * FROM pomodoro_records WHERE 1=1"
+    params = []
+    if date_from:
+        sql += " AND date >= ?"; params.append(date_from)
+    if date_to:
+        sql += " AND date <= ?"; params.append(date_to)
+    if tag:
+        sql += " AND tag = ?"; params.append(tag)
+    sql += " ORDER BY start_time DESC LIMIT ?"; params.append(limit)
+
+    rows = db.execute(sql, params).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+@app.route('/api/records', methods=['POST'])
+def api_create_record():
+    db = get_db()
+    data = request.get_json()
+    now = datetime.datetime.now().isoformat()
+
+    db.execute("""
+        INSERT INTO pomodoro_records (date, start_time, duration_minutes, status, tag, focus_score, reflection)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        data.get('date', datetime.date.today().isoformat()),
+        data.get('start_time', now),
+        data.get('duration_minutes', 0),
+        data.get('status', 'completed'),
+        data.get('tag', ''),
+        data.get('focus_score'),
+        data.get('reflection', ''),
+    ))
+    db.commit()
+    record_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+    return jsonify({'id': record_id, 'ok': True})
+
+# --- 统计 API ---
+
+@app.route('/api/stats/today', methods=['GET'])
+def api_stats_today():
+    db = get_db()
+    today = datetime.date.today().isoformat()
+    rows = db.execute("""
+        SELECT COALESCE(SUM(duration_minutes), 0) AS total_minutes,
+               COUNT(*) AS count
+        FROM pomodoro_records
+        WHERE date = ? AND status = 'completed'
+    """, (today,)).fetchone()
+    goal = db.execute("SELECT value FROM settings WHERE key='daily_goal_minutes'").fetchone()
+    goal_minutes = int(goal['value']) if goal else 120
+    return jsonify({
+        'date': today,
+        'total_minutes': rows['total_minutes'],
+        'pomodoro_count': rows['count'],
+        'goal_minutes': goal_minutes,
+        'goal_percent': round(rows['total_minutes'] / goal_minutes * 100, 1) if goal_minutes > 0 else 0,
+    })
+
+@app.route('/api/stats/summary', methods=['GET'])
+def api_stats_summary():
+    db = get_db()
+    today = datetime.date.today()
+    # 今日
+    today_row = db.execute("""
+        SELECT COALESCE(SUM(duration_minutes),0) AS m, COUNT(*) AS c
+        FROM pomodoro_records WHERE date=? AND status='completed'
+    """, (today.isoformat(),)).fetchone()
+
+    # 本周 (周一 ~ 周日)
+    week_start = today - datetime.timedelta(days=today.weekday())
+    week_end   = week_start + datetime.timedelta(days=6)
+    week_row = db.execute("""
+        SELECT COALESCE(SUM(duration_minutes),0) AS m, COUNT(*) AS c
+        FROM pomodoro_records
+        WHERE date BETWEEN ? AND ? AND status='completed'
+    """, (week_start.isoformat(), week_end.isoformat())).fetchone()
+    week_days = (today - week_start).days + 1
+
+    # 本月
+    month_start = today.replace(day=1)
+    month_row = db.execute("""
+        SELECT COALESCE(SUM(duration_minutes),0) AS m, COUNT(*) AS c
+        FROM pomodoro_records
+        WHERE date BETWEEN ? AND ? AND status='completed'
+    """, (month_start.isoformat(), today.isoformat())).fetchone()
+    month_days = today.day
+
+    # 连续天数 streak：从今天往回数，今天无记录则从昨天开始
+    streak = 0
+    cur = today
+    while True:
+        row = db.execute("""
+            SELECT COUNT(*) AS c FROM pomodoro_records
+            WHERE date=? AND status='completed'
+        """, (cur.isoformat(),)).fetchone()
+        if row['c'] > 0:
+            streak += 1
+            cur -= datetime.timedelta(days=1)
+        elif streak == 0 and cur == today:
+            cur -= datetime.timedelta(days=1)  # 今天无记录，从昨天继续
+        else:
+            break
+
+    # 累计总时长
+    total_row = db.execute("""
+        SELECT COALESCE(SUM(duration_minutes),0) AS m FROM pomodoro_records WHERE status='completed'
+    """).fetchone()
+
+    # Top 3 标签
+    tag_rows = db.execute("""
+        SELECT tag, COUNT(*) AS c, SUM(duration_minutes) AS m
+        FROM pomodoro_records WHERE status='completed' AND tag != ''
+        GROUP BY tag ORDER BY c DESC LIMIT 3
+    """).fetchall()
+
+    goal = db.execute("SELECT value FROM settings WHERE key='daily_goal_minutes'").fetchone()
+    goal_minutes = int(goal['value']) if goal else 120
+
+    return jsonify({
+        'today': {
+            'total_minutes': today_row['m'],
+            'pomodoro_count': today_row['c'],
+            'goal_minutes': goal_minutes,
+            'goal_percent': round(today_row['m'] / goal_minutes * 100, 1) if goal_minutes > 0 else 0,
+        },
+        'week': {
+            'total_minutes': week_row['m'],
+            'avg_daily': round(week_row['m'] / max(week_days, 1), 1),
+            'pomodoro_count': week_row['c'],
+        },
+        'month': {
+            'total_minutes': month_row['m'],
+            'avg_daily': round(month_row['m'] / max(month_days, 1), 1),
+            'pomodoro_count': month_row['c'],
+        },
+        'streak': streak,
+        'total_all_time': total_row['m'],
+        'top_tags': [{'tag': r['tag'], 'count': r['c'], 'minutes': r['m']} for r in tag_rows],
+    })
+
+# --- 按标签统计 API ---
+
+@app.route('/api/stats/by-tag', methods=['GET'])
+def api_stats_by_tag():
+    db = get_db()
+    period = request.args.get('period', 'all')  # 'all' | 'week' | 'month' | 'today'
+
+    sql = """
+        SELECT tag, COUNT(*) AS cnt, SUM(duration_minutes) AS total_min
+        FROM pomodoro_records
+        WHERE status='completed' AND tag != ''
+    """
+    params = []
+
+    today = datetime.date.today()
+    if period == 'today':
+        sql += " AND date = ?"
+        params.append(today.isoformat())
+    elif period == 'week':
+        week_start = today - datetime.timedelta(days=today.weekday())
+        sql += " AND date >= ?"
+        params.append(week_start.isoformat())
+    elif period == 'month':
+        sql += " AND date >= ?"
+        params.append(today.replace(day=1).isoformat())
+
+    sql += " GROUP BY tag ORDER BY total_min DESC"
+
+    rows = db.execute(sql, params).fetchall()
+    result = [{'tag': r['tag'], 'count': r['cnt'], 'total_minutes': r['total_min']} for r in rows]
+
+    # 总计（含无标签记录）
+    total_sql = """
+        SELECT COUNT(*) AS cnt, COALESCE(SUM(duration_minutes), 0) AS total_min
+        FROM pomodoro_records WHERE status='completed'
+    """
+    total_params = []
+    if period == 'today':
+        total_sql += " AND date = ?"
+        total_params.append(today.isoformat())
+    elif period == 'week':
+        total_sql += " AND date >= ?"
+        total_params.append((today - datetime.timedelta(days=today.weekday())).isoformat())
+    elif period == 'month':
+        total_sql += " AND date >= ?"
+        total_params.append(today.replace(day=1).isoformat())
+
+    total_row = db.execute(total_sql, total_params).fetchone()
+
+    return jsonify({
+        'tags': result,
+        'total_pomodoros': total_row['cnt'],
+        'total_minutes': total_row['total_min'],
+    })
+
+# --- 热力图数据 ---
+
+@app.route('/api/stats/heatmap', methods=['GET'])
+def api_stats_heatmap():
+    db = get_db()
+    view = request.args.get('view', 'year')   # 'year' | 'month'
+    year = request.args.get('year', datetime.date.today().year, type=int)
+    month = request.args.get('month', type=int)
+    tag  = request.args.get('tag')
+
+    if view == 'month':
+        if month is None:
+            month = datetime.date.today().month
+        from_date = datetime.date(year, month, 1)
+        if month == 12:
+            to_date = datetime.date(year + 1, 1, 1)
+        else:
+            to_date = datetime.date(year, month + 1, 1)
+    else:
+        from_date = datetime.date(year, 1, 1)
+        to_date   = datetime.date(year + 1, 1, 1)
+
+    sql = """
+        SELECT date, SUM(duration_minutes) AS m, COUNT(*) AS c
+        FROM pomodoro_records
+        WHERE date >= ? AND date < ? AND status='completed'
+    """
+    params = [from_date.isoformat(), to_date.isoformat()]
+    if tag:
+        sql += " AND tag = ?"
+        params.append(tag)
+    sql += " GROUP BY date ORDER BY date"
+
+    rows = db.execute(sql, params).fetchall()
+    data = {r['date']: {'minutes': r['m'], 'count': r['c']} for r in rows}
+
+    # 所有可用标签
+    tags = db.execute("""
+        SELECT DISTINCT tag FROM pomodoro_records
+        WHERE status='completed' AND tag != '' ORDER BY tag
+    """).fetchall()
+
+    return jsonify({
+        'data': data,
+        'from': from_date.isoformat(),
+        'to': to_date.isoformat(),
+        'tags': [t['tag'] for t in tags],
+    })
+
+# --- 趋势数据 ---
+
+@app.route('/api/stats/trend', methods=['GET'])
+def api_stats_trend():
+    db = get_db()
+    granularity = request.args.get('granularity', 'day')  # 'day' | 'week' | 'month'
+    days        = request.args.get('days', 90, type=int)
+    tag         = request.args.get('tag')
+    goal_minutes = int(load_settings(db).get('daily_goal_minutes', 120))
+
+    to_date = datetime.date.today()
+    from_date = to_date - datetime.timedelta(days=days)
+
+    if granularity == 'day':
+        sql = """
+            SELECT date, SUM(duration_minutes) AS m, COUNT(*) AS c
+            FROM pomodoro_records
+            WHERE date BETWEEN ? AND ? AND status='completed'
+        """
+        params = [from_date.isoformat(), to_date.isoformat()]
+        if tag:
+            sql += " AND tag = ?"
+            params.append(tag)
+        sql += " GROUP BY date ORDER BY date"
+
+        rows = db.execute(sql, params).fetchall()
+        # 填充所有日期（包括无记录的）
+        data_map = {r['date']: {'minutes': r['m'], 'count': r['c']} for r in rows}
+        result = []
+        cur = from_date
+        while cur <= to_date:
+            iso = cur.isoformat()
+            entry = data_map.get(iso, {'minutes': 0, 'count': 0})
+            result.append({'date': iso, **entry})
+            cur += datetime.timedelta(days=1)
+
+        return jsonify({'data': result, 'goal_minutes': goal_minutes})
+
+    elif granularity == 'week':
+        sql = """
+            SELECT strftime('%Y-W%W', date) AS week, SUM(duration_minutes) AS m, COUNT(*) AS c
+            FROM pomodoro_records
+            WHERE date BETWEEN ? AND ? AND status='completed'
+        """
+        params = [from_date.isoformat(), to_date.isoformat()]
+        if tag:
+            sql += " AND tag = ?"
+            params.append(tag)
+        sql += " GROUP BY week ORDER BY week"
+        rows = db.execute(sql, params).fetchall()
+        return jsonify({
+            'data': [{'period': r['week'], 'minutes': r['m'], 'count': r['c']} for r in rows],
+            'goal_minutes': goal_minutes * 7,
+        })
+
+    elif granularity == 'month':
+        sql = """
+            SELECT strftime('%Y-%m', date) AS month, SUM(duration_minutes) AS m, COUNT(*) AS c
+            FROM pomodoro_records
+            WHERE date BETWEEN ? AND ? AND status='completed'
+        """
+        params = [from_date.isoformat(), to_date.isoformat()]
+        if tag:
+            sql += " AND tag = ?"
+            params.append(tag)
+        sql += " GROUP BY month ORDER BY month"
+        rows = db.execute(sql, params).fetchall()
+        return jsonify({
+            'data': [{'period': r['month'], 'minutes': r['m'], 'count': r['c']} for r in rows],
+            'goal_minutes': goal_minutes * 30,
+        })
+
+    return jsonify({'data': [], 'goal_minutes': goal_minutes})
+
+# --- 导出 API ---
+
+@app.route('/api/export', methods=['GET'])
+def api_export():
+    db = get_db()
+    fmt = request.args.get('format', 'json')
+    rows = db.execute("""
+        SELECT id, date, start_time, duration_minutes, status, tag, focus_score, reflection
+        FROM pomodoro_records ORDER BY start_time
+    """).fetchall()
+    records = [dict(r) for r in rows]
+
+    if fmt == 'csv':
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=[
+            'id', 'date', 'start_time', 'duration_minutes', 'status',
+            'tag', 'focus_score', 'reflection'
+        ])
+        writer.writeheader()
+        writer.writerows(records)
+        return output.getvalue(), 200, {
+            'Content-Type': 'text/csv; charset=utf-8',
+            'Content-Disposition': 'attachment; filename=pomodoro_export.csv',
+        }
+
+    return jsonify(records)
+
+# ── 系统托盘 ──────────────────────────────────────────────
+
+def create_tray_icon():
+    """创建系统托盘图标，返回 (icon, tray) 或 (None, None)"""
+    try:
+        from PIL import Image, ImageDraw
+        import pystray
+    except ImportError:
+        return None, None
+
+    # 生成番茄图标
+    img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.ellipse([4, 8, 60, 60], fill='#E74C3C', outline='#C0392B', width=2)
+    draw.ellipse([20, 4, 44, 20], fill='#27AE60', outline='#1E8449', width=1)  # 顶部绿叶
+
+    def on_open(icon, item):
+        webbrowser.open(f'http://{HOST}:{PORT}')
+
+    def on_quit(icon, item):
+        icon.stop()
+        os._exit(0)
+
+    icon = pystray.Icon(
+        'pomodoro',
+        img,
+        '🍅 番茄钟',
+        menu=pystray.Menu(
+            pystray.MenuItem('打开番茄钟', on_open, default=True),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem('退出', on_quit),
+        ),
+    )
+    return icon, pystray
+
+# ── 主入口 ────────────────────────────────────────────────
+
+def safe_print(msg):
+    """Windows GBK 兼容打印"""
+    try:
+        print(msg)
+    except UnicodeEncodeError:
+        sanitized = msg.encode('gbk', errors='replace').decode('gbk', errors='replace')
+        print(sanitized)
+
+def _start_flask():
+    """后台线程启动 Flask"""
+    app.run(host=HOST, port=PORT, debug=False, use_reloader=False)
+
+def run_browser_mode():
+    """开发模式：浏览器打开"""
+    init_db()
+    safe_print("[Pomodoro] Starting (browser mode)...")
+    flask_thread = threading.Thread(target=_start_flask, daemon=True)
+    flask_thread.start()
+    safe_print(f"   http://{HOST}:{PORT}")
+    webbrowser.open(f'http://{HOST}:{PORT}')
+
+    icon, pystray_mod = create_tray_icon()
+    if icon and pystray_mod:
+        icon.run()
+    else:
+        safe_print("   (Ctrl+C to quit)")
+        flask_thread.join()
+
+def run_desktop_mode():
+    """桌面模式：pywebview 原生窗口"""
+    import webview
+
+    init_db()
+    safe_print("[Pomodoro] Starting (desktop mode)...")
+
+    # 启动 Flask
+    flask_thread = threading.Thread(target=_start_flask, daemon=True)
+    flask_thread.start()
+
+    # 创建原生窗口
+    webview.create_window(
+        title='Tomato Timer',
+        url=f'http://{HOST}:{PORT}',
+        width=480,
+        height=780,
+        min_size=(420, 640),
+        text_select=False,
+        confirm_close=True,
+    )
+
+    # 窗口关闭时退出
+    webview.start()
+    os._exit(0)
+
+def main():
+    if '--browser' in sys.argv:
+        run_browser_mode()
+    else:
+        run_desktop_mode()
+
+if __name__ == '__main__':
+    main()
