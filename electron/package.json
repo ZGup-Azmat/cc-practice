@@ -14,8 +14,7 @@
       "output": "../dist"
     },
     "files": [
-      "main.js",
-      "preload.js"
+      "main.js"
     ],
     "extraResources": [
       {
@@ -24,8 +23,7 @@
       }
     ],
     "win": {
-      "target": "nsis",
-      "icon": "../static/favicon.ico"
+      "target": "nsis"
     },
     "nsis": {
       "oneClick": false,

@@ -8,22 +8,22 @@ const FLASK_URL = `http://127.0.0.1:${FLASK_PORT}`;
 
 let flaskProcess = null;
 
+function killFlask() {
+  if (flaskProcess) {
+    flaskProcess.kill();
+    flaskProcess = null;
+  }
+}
+
 function startFlask() {
   const isDev = !app.isPackaged;
 
   if (isDev) {
-    // 开发模式：python 直接在项目目录运行
     const appDir = path.join(__dirname, '..');
-    flaskProcess = spawn('python', ['app.py', '--headless'], {
-      cwd: appDir,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    flaskProcess = spawn('python', ['app.py', '--headless'], { cwd: appDir });
   } else {
-    // 打包模式：使用 PyInstaller 打包的 server.exe
     const serverExe = path.join(process.resourcesPath, 'server', 'server.exe');
-    flaskProcess = spawn(serverExe, ['--headless'], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    flaskProcess = spawn(serverExe, ['--headless']);
   }
 
   flaskProcess.stdout.on('data', (data) => {
@@ -41,6 +41,7 @@ function waitForFlask(retries = 30) {
   return new Promise((resolve, reject) => {
     function check(remaining) {
       http.get(FLASK_URL + '/api/settings', (res) => {
+        res.destroy(); // 立即释放 socket，不消费 body
         resolve();
       }).on('error', () => {
         if (remaining <= 0) return reject(new Error('Flask 启动超时'));
@@ -77,27 +78,14 @@ async function createWindow() {
 
   win.loadURL(FLASK_URL);
 
-  win.on('closed', () => {
-    if (flaskProcess) {
-      flaskProcess.kill();
-      flaskProcess = null;
-    }
-  });
+  win.on('closed', killFlask);
 }
 
 app.whenReady().then(createWindow);
 
 app.on('window-all-closed', () => {
-  if (flaskProcess) {
-    flaskProcess.kill();
-    flaskProcess = null;
-  }
+  killFlask();
   app.quit();
 });
 
-app.on('before-quit', () => {
-  if (flaskProcess) {
-    flaskProcess.kill();
-    flaskProcess = null;
-  }
-});
+app.on('before-quit', killFlask);
