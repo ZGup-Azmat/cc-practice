@@ -819,8 +819,16 @@ def run_desktop_mode():
     webview.start()
     os._exit(0)
 
+def run_headless_mode():
+    """Electron 模式：纯后台 Flask，供 Electron 窗口加载"""
+    init_db()
+    safe_print(f"[Pomodoro] Headless — http://{HOST}:{PORT}")
+    _start_flask()
+
 def main():
-    if '--browser' in sys.argv:
+    if '--headless' in sys.argv:
+        run_headless_mode()
+    elif '--browser' in sys.argv:
         run_browser_mode()
     else:
         run_desktop_mode()
