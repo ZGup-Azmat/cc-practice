@@ -4,6 +4,12 @@ A local-first Pomodoro timer desktop app with data visualization dashboard, tag 
 
 **本地优先的番茄钟桌面应用**，内置数据看板、标签管理和系统托盘。
 
+## 📖 About 关于
+
+A minimalist Pomodoro timer built for focused work sessions. Track your time with visual tags, review productivity patterns through heatmaps and trend charts, and manage everything offline — your data stays in a single SQLite file next to the executable. The app runs as a native Windows desktop window (via pywebview) or in the browser for development.
+
+**极简番茄钟**，为专注工作而生。用可视化标签追踪时间，通过热力图和趋势图表回顾效率模式。一切离线运行，数据存储在与可执行文件同目录的 SQLite 文件中。支持原生 Windows 桌面窗口和浏览器开发模式。
+
 ---
 
 ## ✨ Features 功能
