@@ -75,6 +75,12 @@ def init_db():
             created_at TEXT    NOT NULL
         );
     """)
+    # v3.1: 加列（如果旧表没有）
+    cols = {row[1] for row in db.execute("PRAGMA table_info(tags)")}
+    if 'target_pomodoros' not in cols:
+        db.execute("ALTER TABLE tags ADD COLUMN target_pomodoros INTEGER DEFAULT NULL")
+    if 'tag_type' not in cols:
+        db.execute("ALTER TABLE tags ADD COLUMN tag_type TEXT DEFAULT 'daily'")
     # 迁移历史 tag 名到 tags 表
     db.execute("""
         INSERT OR IGNORE INTO tags (name, color, icon, created_at)
@@ -113,6 +119,17 @@ def _get_tag_colors(db):
     return {r['name']: r for r in rows}
 
 GHOST_COLOR = '#94A3B8'   # 已删除标签的 fallback 灰色
+VALID_TAG_TYPES = {'daily', 'once'}
+
+def _parse_target_pomodoros(value):
+    """解析目标番茄数，非法/超出范围返回 None"""
+    if value is None:
+        return None
+    try:
+        n = int(value)
+        return n if 1 <= n <= 20 else None
+    except (ValueError, TypeError):
+        return None
 
 # 自动初始化（首次请求时检查） ──────────────────────────────
 _db_initialized = False
@@ -373,7 +390,30 @@ def api_stats_by_tag():
 def api_get_tags():
     db = get_db()
     rows = db.execute("SELECT * FROM tags ORDER BY created_at").fetchall()
-    return jsonify([dict(r) for r in rows])
+    today = datetime.date.today().isoformat()
+    # 每个标签今日完成数
+    today_counts = {}
+    for r in db.execute("""
+        SELECT tag, COUNT(*) AS cnt FROM pomodoro_records
+        WHERE date = ? AND status = 'completed' AND tag != ''
+        GROUP BY tag
+    """, (today,)).fetchall():
+        today_counts[r['tag']] = r['cnt']
+    # 每个标签全部完成数（仅一次性标签需要）
+    all_counts = {}
+    for r in db.execute("""
+        SELECT tag, COUNT(*) AS cnt FROM pomodoro_records
+        WHERE status = 'completed' AND tag != ''
+        GROUP BY tag
+    """).fetchall():
+        all_counts[r['tag']] = r['cnt']
+    result = []
+    for r in rows:
+        d = dict(r)
+        d['today_done'] = today_counts.get(r['name'], 0)
+        d['all_done'] = all_counts.get(r['name'], 0)
+        result.append(d)
+    return jsonify(result)
 
 @app.route('/api/tags', methods=['POST'])
 def api_create_tag():
@@ -389,10 +429,14 @@ def api_create_tag():
         return jsonify({'ok': False, 'error': '标签名已存在'}), 400
     color = data.get('color', '#27AE60')
     icon = data.get('icon', '')
+    target = _parse_target_pomodoros(data.get('target_pomodoros'))
+    tag_type = data.get('tag_type', 'daily')
+    if tag_type not in VALID_TAG_TYPES:
+        tag_type = 'daily'
     now = datetime.datetime.now().isoformat()
     db.execute(
-        "INSERT INTO tags (name, color, icon, created_at) VALUES (?, ?, ?, ?)",
-        (name, color, icon, now)
+        "INSERT INTO tags (name, color, icon, target_pomodoros, tag_type, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (name, color, icon, target, tag_type, now)
     )
     db.commit()
     tag_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -415,9 +459,13 @@ def api_update_tag(tag_id):
         return jsonify({'ok': False, 'error': '标签名已存在'}), 400
     color = data.get('color', tag['color'])
     icon = data.get('icon', tag['icon'])
+    target = _parse_target_pomodoros(data.get('target_pomodoros', tag['target_pomodoros']))
+    tag_type = data.get('tag_type', tag['tag_type'] or 'daily')
+    if tag_type not in VALID_TAG_TYPES:
+        tag_type = 'daily'
     db.execute(
-        "UPDATE tags SET name = ?, color = ?, icon = ? WHERE id = ?",
-        (name, color, icon, tag_id)
+        "UPDATE tags SET name = ?, color = ?, icon = ?, target_pomodoros = ?, tag_type = ? WHERE id = ?",
+        (name, color, icon, target, tag_type, tag_id)
     )
     db.commit()
     return jsonify({'ok': True})
@@ -432,6 +480,19 @@ def api_delete_tag(tag_id):
     db.execute("DELETE FROM tags WHERE id = ?", (tag_id,))
     db.commit()
     return jsonify({'ok': True})
+
+@app.route('/api/tags/progress', methods=['GET'])
+def api_tags_progress():
+    """返回每个标签今日已完成番茄数"""
+    db = get_db()
+    today = datetime.date.today().isoformat()
+    rows = db.execute("""
+        SELECT tag, COUNT(*) AS cnt FROM pomodoro_records
+        WHERE date = ? AND status = 'completed' AND tag != ''
+        GROUP BY tag
+    """, (today,)).fetchall()
+    progress = {r['tag']: r['cnt'] for r in rows}
+    return jsonify({'progress': progress, 'date': today})
 
 # --- 单日按标签聚合（含已删除标签 fallback） ---
 

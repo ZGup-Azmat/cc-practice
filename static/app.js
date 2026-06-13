@@ -368,6 +368,7 @@ function onTimerEnd() {
     };
 
     STATE.completedSession = record;
+
     playBeep();
     showNotification('🍅 番茄完成！', `已完成 ${STATE.pomodoroCount} 个番茄，休息一下吧~`);
 
@@ -432,30 +433,54 @@ function setTagsLocked(locked) {
 }
 
 async function renderTagChips() {
-  const tags = STATE.allTagObjects;
+  const allTags = STATE.allTagObjects;
   const container = _dom.tagChips;
 
-  // 差异检测：标签列表未变时跳过 DOM 重建（节省 30s 轮询开销）
-  const fp = tags.map(t => `${t.id}:${t.name}:${t.color}:${t.icon}`).join(',')
+  // 差异检测（含进度数据）
+  const fp = allTags.map(t => `${t.id}:${t.name}:${t.color}:${t.icon}:${t.today_done}:${t.all_done}:${t.target_pomodoros}:${t.tag_type}`).join(',')
            + '|sel=' + (STATE.selectedTag ? STATE.selectedTag.id : 'null')
            + '|run=' + STATE.isRunning;
-  if (container._fp === fp && tags.length > 0) return;
+  if (container._fp === fp && allTags.length > 0) return;
   container._fp = fp;
 
-  if (tags.length === 0) {
+  if (allTags.length === 0) {
     container._fp = null;
     container.innerHTML = '<div class="tag-chips-empty">还没有标签，去「设置 → 标签管理」创建吧~</div>';
     return;
   }
 
-  container.innerHTML = tags.map(t => {
+  // 过滤：一次性标签已完成则隐藏
+  const visible = allTags.filter(t => {
+    if (t.tag_type === 'once' && t.target_pomodoros && (t.all_done || 0) >= t.target_pomodoros) return false;
+    return true;
+  });
+
+  if (visible.length === 0) {
+    container._fp = null;
+    container.innerHTML = '<div class="tag-chips-empty">所有目标已完成 🎉，去「设置 → 标签管理」创建新标签吧~</div>';
+    return;
+  }
+
+  container.innerHTML = visible.map(t => {
     const iconStr = t.icon ? `<span class="tag-chip-icon">${t.icon}</span>` : '';
     const selClass = (STATE.selectedTag && STATE.selectedTag.id === t.id) ? ' selected' : '';
     const lockedClass = STATE.isRunning ? ' locked' : '';
-    return `<div class="tag-chip${selClass}${lockedClass}" data-tag-id="${t.id}" data-tag-name="${t.name}" data-tag-color="${t.color}" data-tag-icon="${t.icon || ''}">
+    // 进度（计算一次，复用）
+    let progressHtml = '';
+    let doneClass = '';
+    if (t.target_pomodoros) {
+      const done = t.tag_type === 'once' ? (t.all_done || 0) : (t.today_done || 0);
+      const isDone = done >= t.target_pomodoros;
+      progressHtml = isDone
+        ? '<span class="tag-chip-progress">✓</span>'
+        : `<span class="tag-chip-progress">${done}/${t.target_pomodoros}</span>`;
+      if (isDone) doneClass = ' done';
+    }
+    return `<div class="tag-chip${selClass}${lockedClass}${doneClass}" data-tag-id="${t.id}" data-tag-name="${t.name}" data-tag-color="${t.color}" data-tag-icon="${t.icon || ''}">
       <span class="tag-chip-dot" style="background:${t.color}"></span>
       ${iconStr}
       <span>${t.name}</span>
+      ${progressHtml}
     </div>`;
   }).join('');
 
@@ -463,22 +488,20 @@ async function renderTagChips() {
   container.onclick = e => {
     if (STATE.isRunning) return;
     const chip = e.target.closest('.tag-chip');
-    if (!chip) return;
+    if (!chip || chip.classList.contains('done')) return;
     selectTagChip(chip);
   };
 
   container.ondblclick = e => {
     if (STATE.isRunning) return;
     const chip = e.target.closest('.tag-chip');
-    if (!chip) return;
+    if (!chip || chip.classList.contains('done')) return;
     selectTagChip(chip);
-    // 双击直接开始
     if (STATE.mode === 'work') {
       startTimer();
     }
   };
 
-  // 更新活跃标签显示
   updateActiveTagDisplay();
 }
 
@@ -1223,8 +1246,10 @@ function showTagEditModal(tag) {
   const title = document.getElementById('tag-edit-title');
   const nameInput = document.getElementById('tag-edit-name');
   const iconInput = document.getElementById('tag-edit-icon');
+  const targetInput = document.getElementById('tag-edit-target');
   const colorsContainer = document.getElementById('tag-edit-colors');
   const charCount = document.getElementById('tag-char-count');
+  const typeToggle = document.getElementById('tag-edit-type');
 
   // 当前编辑的标签 id（null = 新增）
   modal._tagId = tag ? tag.id : null;
@@ -1232,7 +1257,21 @@ function showTagEditModal(tag) {
 
   nameInput.value = tag ? tag.name : '';
   iconInput.value = tag ? (tag.icon || '') : '';
+  targetInput.value = (tag && tag.target_pomodoros) ? tag.target_pomodoros : '';
   charCount.textContent = (tag ? tag.name.length : 0) + '/12';
+
+  // 类型切换
+  let selectedType = (tag && tag.tag_type) ? tag.tag_type : 'daily';
+  typeToggle.querySelectorAll('.tt-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.type === selectedType);
+  });
+  typeToggle.onclick = e => {
+    const btn = e.target.closest('.tt-btn');
+    if (!btn) return;
+    typeToggle.querySelectorAll('.tt-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    selectedType = btn.dataset.type;
+  };
 
   // 颜色选择器
   let selectedColor = tag ? tag.color : PRESET_COLORS[0];
@@ -1253,7 +1292,7 @@ function showTagEditModal(tag) {
     charCount.textContent = nameInput.value.length + '/12';
   };
 
-  // 保存按钮
+  // 保存逻辑
   const saveBtn = document.getElementById('btn-tag-edit-save');
   const cancelBtn = document.getElementById('btn-tag-edit-cancel');
 
@@ -1263,7 +1302,12 @@ function showTagEditModal(tag) {
       alert('标签名需 1-12 个字符');
       return;
     }
-    const data = { name, color: selectedColor, icon: iconInput.value.trim() };
+    const targetVal = parseInt(targetInput.value);
+    const data = {
+      name, color: selectedColor, icon: iconInput.value.trim(),
+      target_pomodoros: (targetVal >= 1 && targetVal <= 20) ? targetVal : null,
+      tag_type: selectedType,
+    };
     let result;
     if (modal._tagId) {
       result = await API.updateTag(modal._tagId, data);
@@ -1272,20 +1316,28 @@ function showTagEditModal(tag) {
     }
     if (result.ok) {
       modal.classList.remove('show');
-      await updateTagSuggestions();           // 拉取标签、更新 STATE、渲染 chips
-      renderTagManagement(STATE.allTagObjects); // 复用已加载的数据
+      await updateTagSuggestions();
+      renderTagManagement(STATE.allTagObjects);
     } else {
       alert('操作失败: ' + (result.error || '未知错误'));
     }
   };
 
+  const onCancel = () => { modal.classList.remove('show'); };
+
+  // 键盘：Enter 保存 / Esc 取消（先移除旧监听器防累积）
+  if (modal._onKey) modal.removeEventListener('keydown', modal._onKey);
+  modal._onKey = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); onSave(); }
+    if (e.key === 'Escape') { e.preventDefault(); onCancel(); }
+  };
+  modal.addEventListener('keydown', modal._onKey);
+
   // cloneNode 清理旧监听器（闭包引用每次不同，removeEventListener 不可靠）
   saveBtn.replaceWith(saveBtn.cloneNode(true));
   cancelBtn.replaceWith(cancelBtn.cloneNode(true));
   document.getElementById('btn-tag-edit-save').addEventListener('click', onSave);
-  document.getElementById('btn-tag-edit-cancel').addEventListener('click', () => {
-    modal.classList.remove('show');
-  });
+  document.getElementById('btn-tag-edit-cancel').addEventListener('click', onCancel);
 
   modal.classList.add('show');
   nameInput.focus();

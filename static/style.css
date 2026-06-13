@@ -745,6 +745,39 @@ body {
 }
 .tag-edit-field input[type="text"]:focus { border-color: var(--accent); }
 .tag-char-count { font-size: 11px; color: var(--text-muted); float: right; }
+.tag-edit-field input[type="number"] {
+  width: 100%; padding: 8px 12px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg); color: var(--text);
+  font-size: 14px; outline: none;
+}
+.tag-edit-field input[type="number"]:focus { border-color: var(--accent); }
+
+/* ── 类型切换按钮 ──────────────────────────────────── */
+.tag-type-toggle { display: flex; gap: 6px; }
+.tt-btn {
+  flex: 1; padding: 8px 0; border: 2px solid var(--border);
+  border-radius: var(--radius-sm); background: transparent;
+  color: var(--text-secondary); font-size: 13px; cursor: pointer;
+  transition: all var(--transition);
+}
+.tt-btn.active {
+  border-color: var(--accent); background: var(--accent-light);
+  color: var(--accent); font-weight: 600;
+}
+.tt-btn:hover:not(.active) { border-color: var(--accent); }
+
+/* ── 标签 chip 进度 ────────────────────────────────── */
+.tag-chip-progress {
+  font-size: 11px; color: var(--text-muted);
+  background: var(--bg); padding: 1px 6px;
+  border-radius: 10px; margin-left: 2px;
+}
+.tag-chip.done {
+  opacity: 0.55; pointer-events: none;
+  border-color: var(--green);
+}
+.tag-chip.done .tag-chip-progress { color: var(--green); font-weight: 600; }
 
 /* ── 数据管理 ──────────────────────────────────────── */
 .data-path-row {
