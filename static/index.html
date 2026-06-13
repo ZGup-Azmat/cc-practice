@@ -36,14 +36,18 @@
     <div class="goal-percent" id="goal-percent">0%</div>
   </div>
 
-  <!-- 标签/项目选择 -->
+  <!-- 标签/项目选择器 -->
   <div class="tag-selector">
     <label>📂 标签 / 项目</label>
-    <div class="tag-input-row">
-      <input type="text" id="tag-input" list="tag-suggestions"
-             placeholder="如：编程、阅读、数学（可留空）" autocomplete="off">
-      <datalist id="tag-suggestions"></datalist>
+    <div class="tag-chips" id="tag-chips">
+      <div class="tag-chips-empty">还没有标签，去「设置 → 标签管理」创建吧~</div>
     </div>
+  </div>
+
+  <!-- 当前专注标签 -->
+  <div class="active-tag-display" id="active-tag-display" style="display:none">
+    <span class="active-tag-dot" id="active-tag-dot"></span>
+    <span class="active-tag-name" id="active-tag-name"></span>
   </div>
 
   <!-- 计时器圆环 -->
@@ -174,19 +178,19 @@
     <!-- 按标签/项目统计明细 -->
     <div class="tag-breakdown-section">
       <div class="tag-breakdown-header">
-        <h3>📂 项目标签明细</h3>
-        <select id="tag-period-filter">
-          <option value="all">全部时间</option>
-          <option value="month">本月</option>
-          <option value="week">本周</option>
-          <option value="today">今日</option>
-        </select>
+        <h3>📂 标签明细</h3>
+        <div class="tag-period-btns" id="tag-period-btns">
+          <button class="tp-btn active" data-period="all">全部</button>
+          <button class="tp-btn" data-period="week">本周</button>
+          <button class="tp-btn" data-period="month">本月</button>
+          <button class="tp-btn" data-period="today">今日</button>
+        </div>
       </div>
       <div class="tag-breakdown-total" id="tag-breakdown-grand">
         总计 0 个番茄 · 0h 0m
       </div>
       <div class="tag-breakdown-list" id="tag-breakdown-list">
-        <div class="tag-breakdown-empty">暂无数据，开始第一个番茄吧~</div>
+        <div class="tag-breakdown-empty">还没有带标签的专注记录，去选一个标签开始吧 🎯</div>
       </div>
     </div>
   </div>
@@ -222,11 +226,54 @@
     </div>
   </div>
 
+  <!-- 标签管理 -->
+  <div class="settings-card" id="tag-mgmt-card">
+    <h3>🏷 标签管理</h3>
+    <div class="tag-mgmt-list" id="tag-mgmt-list"></div>
+    <button class="btn btn-primary btn-sm" id="btn-add-tag" style="margin-top:12px">＋ 新增标签</button>
+  </div>
+
+  <!-- 数据管理 -->
   <div class="settings-card">
     <h3>📤 数据管理</h3>
-    <div class="setting-row">
+    <div class="data-path-row">
+      <label>数据库路径</label>
+      <div class="data-path-input-row">
+        <input type="text" id="data-path-display" readonly class="readonly-input">
+        <button class="btn btn-secondary btn-sm" id="btn-copy-path">📋 复制路径</button>
+        <button class="btn btn-secondary btn-sm" id="btn-open-folder">📁 打开文件夹</button>
+      </div>
+    </div>
+    <div class="setting-row" style="flex-wrap:wrap;gap:8px">
       <button class="btn btn-secondary" id="btn-export-json">导出 JSON</button>
       <button class="btn btn-secondary" id="btn-export-csv">导出 CSV</button>
+      <button class="btn btn-secondary" id="btn-backup">📦 完整备份</button>
+    </div>
+    <div class="data-help">
+      <p>💡 想用 Access 查看数据？请安装 <a href="http://www.ch-werner.de/sqliteodbc/" target="_blank">SQLite ODBC Driver</a>（免费），然后在 Access 里「外部数据 → ODBC 数据库 → 链接表」指向本应用的数据文件即可。</p>
+    </div>
+  </div>
+
+  <!-- 标签编辑弹窗 -->
+  <div class="modal-overlay" id="tag-edit-modal">
+    <div class="modal-card tag-edit-card">
+      <h3 id="tag-edit-title">新增标签</h3>
+      <div class="tag-edit-field">
+        <label>标签名 <span class="tag-char-count" id="tag-char-count">0/12</span></label>
+        <input type="text" id="tag-edit-name" maxlength="12" placeholder="如：编程、阅读（1-12 字）">
+      </div>
+      <div class="tag-edit-field">
+        <label>颜色</label>
+        <div class="color-picker" id="tag-edit-colors"></div>
+      </div>
+      <div class="tag-edit-field">
+        <label>Emoji（可选）</label>
+        <input type="text" id="tag-edit-icon" maxlength="2" placeholder="如：💻">
+      </div>
+      <div class="modal-buttons">
+        <button class="btn btn-secondary" id="btn-tag-edit-cancel">取消</button>
+        <button class="btn btn-primary" id="btn-tag-edit-save">✓ 保存</button>
+      </div>
     </div>
   </div>
 

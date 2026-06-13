@@ -10,10 +10,12 @@ import io
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import datetime
 import threading
 import webbrowser
+import zipfile
 from pathlib import Path
 
 from flask import Flask, request, jsonify, g
@@ -65,6 +67,19 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_date ON pomodoro_records(date);
         CREATE INDEX IF NOT EXISTS idx_tag  ON pomodoro_records(tag);
+        CREATE TABLE IF NOT EXISTS tags (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT    NOT NULL UNIQUE,
+            color      TEXT    DEFAULT '#27AE60',
+            icon       TEXT    DEFAULT '',
+            created_at TEXT    NOT NULL
+        );
+    """)
+    # 迁移历史 tag 名到 tags 表
+    db.execute("""
+        INSERT OR IGNORE INTO tags (name, color, icon, created_at)
+        SELECT DISTINCT tag, '#27AE60', '', datetime('now')
+        FROM pomodoro_records WHERE tag != ''
     """)
     defaults = {
         'work_duration':          '25',
@@ -73,6 +88,7 @@ def init_db():
         'pomodoros_before_long':  '4',
         'daily_goal_minutes':     '120',
         'theme':                  'light',
+        'last_tag':               '',
     }
     for k, v in defaults.items():
         db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v))
@@ -84,6 +100,19 @@ def init_db():
 def load_settings(db):
     rows = db.execute("SELECT key, value FROM settings").fetchall()
     return {row['key']: row['value'] for row in rows}
+
+def _validate_tag_name(name):
+    """验证标签名，返回 (valid, error_message)"""
+    if not name or len(name) > 12:
+        return False, '标签名需 1-12 个字符'
+    return True, ''
+
+def _get_tag_colors(db):
+    """返回 {tag_name: {color, icon}} 映射，用于附加标签样式"""
+    rows = db.execute("SELECT name, color, icon FROM tags").fetchall()
+    return {r['name']: r for r in rows}
+
+GHOST_COLOR = '#94A3B8'   # 已删除标签的 fallback 灰色
 
 # 自动初始化（首次请求时检查） ──────────────────────────────
 _db_initialized = False
@@ -115,7 +144,7 @@ def api_update_settings():
     data = request.get_json()
     allowed = {
         'work_duration', 'short_break_duration', 'long_break_duration',
-        'pomodoros_before_long', 'daily_goal_minutes', 'theme'
+        'pomodoros_before_long', 'daily_goal_minutes', 'theme', 'last_tag'
     }
     for key, value in data.items():
         if key in allowed:
@@ -302,7 +331,17 @@ def api_stats_by_tag():
     sql += " GROUP BY tag ORDER BY total_min DESC"
 
     rows = db.execute(sql, params).fetchall()
-    result = [{'tag': r['tag'], 'count': r['cnt'], 'total_minutes': r['total_min']} for r in rows]
+    tag_colors = _get_tag_colors(db)
+    result = []
+    for r in rows:
+        tinfo = tag_colors.get(r['tag'])
+        result.append({
+            'tag': r['tag'],
+            'count': r['cnt'],
+            'total_minutes': r['total_min'],
+            'color': tinfo['color'] if tinfo else GHOST_COLOR,
+            'icon': tinfo['icon'] if tinfo else '',
+        })
 
     # 总计（含无标签记录）
     total_sql = """
@@ -326,6 +365,117 @@ def api_stats_by_tag():
         'tags': result,
         'total_pomodoros': total_row['cnt'],
         'total_minutes': total_row['total_min'],
+    })
+
+# --- 标签管理 API ---
+
+@app.route('/api/tags', methods=['GET'])
+def api_get_tags():
+    db = get_db()
+    rows = db.execute("SELECT * FROM tags ORDER BY created_at").fetchall()
+    return jsonify([dict(r) for r in rows])
+
+@app.route('/api/tags', methods=['POST'])
+def api_create_tag():
+    db = get_db()
+    data = request.get_json()
+    name = (data.get('name') or '').strip()
+    ok, err = _validate_tag_name(name)
+    if not ok:
+        return jsonify({'ok': False, 'error': err}), 400
+    # 检查重名
+    existing = db.execute("SELECT id FROM tags WHERE name = ?", (name,)).fetchone()
+    if existing:
+        return jsonify({'ok': False, 'error': '标签名已存在'}), 400
+    color = data.get('color', '#27AE60')
+    icon = data.get('icon', '')
+    now = datetime.datetime.now().isoformat()
+    db.execute(
+        "INSERT INTO tags (name, color, icon, created_at) VALUES (?, ?, ?, ?)",
+        (name, color, icon, now)
+    )
+    db.commit()
+    tag_id = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+    return jsonify({'ok': True, 'id': tag_id})
+
+@app.route('/api/tags/<int:tag_id>', methods=['PUT'])
+def api_update_tag(tag_id):
+    db = get_db()
+    tag = db.execute("SELECT * FROM tags WHERE id = ?", (tag_id,)).fetchone()
+    if not tag:
+        return jsonify({'ok': False, 'error': '标签不存在'}), 404
+    data = request.get_json()
+    name = (data.get('name') or '').strip()
+    ok, err = _validate_tag_name(name)
+    if not ok:
+        return jsonify({'ok': False, 'error': err}), 400
+    # 检查重名（排除自身）
+    existing = db.execute("SELECT id FROM tags WHERE name = ? AND id != ?", (name, tag_id)).fetchone()
+    if existing:
+        return jsonify({'ok': False, 'error': '标签名已存在'}), 400
+    color = data.get('color', tag['color'])
+    icon = data.get('icon', tag['icon'])
+    db.execute(
+        "UPDATE tags SET name = ?, color = ?, icon = ? WHERE id = ?",
+        (name, color, icon, tag_id)
+    )
+    db.commit()
+    return jsonify({'ok': True})
+
+@app.route('/api/tags/<int:tag_id>', methods=['DELETE'])
+def api_delete_tag(tag_id):
+    db = get_db()
+    tag = db.execute("SELECT * FROM tags WHERE id = ?", (tag_id,)).fetchone()
+    if not tag:
+        return jsonify({'ok': False, 'error': '标签不存在'}), 404
+    # 只删 tags 表，不动 pomodoro_records
+    db.execute("DELETE FROM tags WHERE id = ?", (tag_id,))
+    db.commit()
+    return jsonify({'ok': True})
+
+# --- 单日按标签聚合（含已删除标签 fallback） ---
+
+@app.route('/api/stats/day-detail', methods=['GET'])
+def api_stats_day_detail():
+    db = get_db()
+    date = request.args.get('date', datetime.date.today().isoformat())
+
+    # 当日按 tag 聚合
+    rows = db.execute("""
+        SELECT tag, COUNT(*) AS cnt, SUM(duration_minutes) AS total_min
+        FROM pomodoro_records
+        WHERE date = ? AND status = 'completed' AND tag != ''
+        GROUP BY tag ORDER BY total_min DESC
+    """, (date,)).fetchall()
+
+    # 总数
+    total_row = db.execute("""
+        SELECT COALESCE(SUM(duration_minutes), 0) AS total_min,
+               COUNT(*) AS cnt
+        FROM pomodoro_records
+        WHERE date = ? AND status = 'completed'
+    """, (date,)).fetchone()
+
+    # 所有已知标签（用于匹配颜色）
+    tag_colors = _get_tag_colors(db)
+
+    details = []
+    for r in rows:
+        tag_name = r['tag']
+        tinfo = tag_colors.get(tag_name)
+        details.append({
+            'tag': tag_name,
+            'count': r['cnt'],
+            'total_minutes': r['total_min'],
+            'color': tinfo['color'] if tinfo else GHOST_COLOR,
+            'icon': tinfo['icon'] if tinfo else '',
+        })
+
+    return jsonify({
+        'date': date,
+        'total_minutes': total_row['total_min'],
+        'total_count': total_row['cnt'],
+        'details': details,
     })
 
 # --- 热力图数据 ---
@@ -477,6 +627,45 @@ def api_export():
         }
 
     return jsonify(records)
+
+# --- 备份 API ---
+
+@app.route('/api/backup', methods=['GET'])
+def api_backup():
+    """下载 pomodoro.db 的 zip 备份"""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        zf.write(str(DB_PATH), 'pomodoro.db')
+    buf.seek(0)
+    return buf.getvalue(), 200, {
+        'Content-Type': 'application/zip',
+        'Content-Disposition': 'attachment; filename=pomodoro_backup.zip',
+    }
+
+@app.route('/api/open-data-folder', methods=['POST'])
+def api_open_data_folder():
+    """打开数据目录"""
+    folder = str(BASE_DIR)
+    try:
+        if sys.platform == 'win32':
+            os.startfile(folder)
+        elif sys.platform == 'darwin':
+            subprocess.run(['open', folder])
+        else:
+            subprocess.run(['xdg-open', folder])
+        return jsonify({'ok': True, 'path': folder})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+# --- 数据库路径 API ---
+
+@app.route('/api/data-path', methods=['GET'])
+def api_data_path():
+    """返回数据库路径"""
+    return jsonify({
+        'db_path': str(DB_PATH),
+        'folder': str(BASE_DIR),
+    })
 
 # ── 系统托盘 ──────────────────────────────────────────────
 

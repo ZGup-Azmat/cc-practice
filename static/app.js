@@ -30,7 +30,9 @@ const STATE = {
   settings: {},
 
   // 标签缓存
-  allTags: [],
+  allTagObjects: [],      // v3: 完整标签对象 [{id, name, color, icon, created_at}]
+  selectedTag: null,       // v3: 当前选中的标签对象
+  lastTag: '',             // v3: 上次使用的标签名
 };
 
 const RING_CIRCUMFERENCE = 2 * Math.PI * 130; // ~816.8
@@ -54,6 +56,13 @@ function fmtMinutesOnly(totalMinutes) {
   const h = Math.floor(totalMinutes / 60);
   const m = Math.round(totalMinutes % 60);
   return `${h}h ${m}m`;
+}
+
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -110,19 +119,51 @@ const API = {
   },
   async exportData(format) {
     const r = await fetch('/api/export?format=' + format);
-    if (format === 'csv') {
-      const blob = await r.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = 'pomodoro_export.csv'; a.click();
-      URL.revokeObjectURL(url);
-    } else {
-      const blob = await r.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = 'pomodoro_export.json'; a.click();
-      URL.revokeObjectURL(url);
-    }
+    const blob = await r.blob();
+    triggerDownload(blob, 'pomodoro_export.' + format);
+  },
+
+  // ── v3 标签管理 ──────────────────────────────────────────
+  async getTags() {
+    const r = await fetch('/api/tags');
+    return r.json();
+  },
+  async createTag(data) {
+    const r = await fetch('/api/tags', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    return r.json();
+  },
+  async updateTag(id, data) {
+    const r = await fetch('/api/tags/' + id, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    return r.json();
+  },
+  async deleteTag(id) {
+    const r = await fetch('/api/tags/' + id, { method: 'DELETE' });
+    return r.json();
+  },
+
+  // ── v3 日明细 ────────────────────────────────────────────
+  async getDayDetail(date) {
+    const r = await fetch('/api/stats/day-detail?date=' + date);
+    return r.json();
+  },
+
+  // ── v3 数据管理 ──────────────────────────────────────────
+  async backup() {
+    const r = await fetch('/api/backup');
+    triggerDownload(await r.blob(), 'pomodoro_backup.zip');
+  },
+  async openDataFolder() {
+    await fetch('/api/open-data-folder', { method: 'POST' });
+  },
+  async getDataPath() {
+    const r = await fetch('/api/data-path');
+    return r.json();
   },
 };
 
@@ -259,6 +300,18 @@ function startTimer() {
 
   STATE.isRunning = true;
   STATE.sessionStart = STATE.sessionStart || new Date().toISOString();
+
+  // 保存 lastTag 到 settings
+  if (STATE.selectedTag) {
+    STATE.lastTag = STATE.selectedTag.name;
+    API.updateSettings({ last_tag: STATE.selectedTag.name }).catch(() => {});
+  } else {
+    STATE.lastTag = '';
+    API.updateSettings({ last_tag: '' }).catch(() => {});
+  }
+
+  // 锁定标签切换
+  setTagsLocked(true);
   updateTimerDisplay();
   timerInterval = setInterval(timerTick, 1000);
 }
@@ -266,6 +319,7 @@ function startTimer() {
 function pauseTimer() {
   STATE.isRunning = false;
   if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+  setTagsLocked(false);
   updateTimerDisplay();
 }
 
@@ -284,7 +338,7 @@ function stopTimer() {
     start_time: STATE.sessionStart,
     duration_minutes: minutes,
     status: 'abandoned',
-    tag: _dom.tagInput.value.trim(),
+    tag: STATE.selectedTag ? STATE.selectedTag.name : '',
   };
 
   API.createRecord(record).then(() => {
@@ -310,7 +364,7 @@ function onTimerEnd() {
       start_time: STATE.sessionStart,
       duration_minutes: elapsedMin,
       status: 'completed',
-      tag: _dom.tagInput.value.trim(),
+      tag: STATE.selectedTag ? STATE.selectedTag.name : '',
     };
 
     STATE.completedSession = record;
@@ -365,7 +419,103 @@ function resetTimerState() {
 
   STATE.timeLeft = getDurations()[STATE.mode];
   STATE.totalTime = STATE.timeLeft;
+  setTagsLocked(false);
   updateTimerDisplay();
+}
+
+// ═══════════════════════════════════════════════════════════
+//  v3 标签选择器
+// ═══════════════════════════════════════════════════════════
+
+function setTagsLocked(locked) {
+  _dom.tagChips.querySelectorAll('.tag-chip').forEach(c => c.classList.toggle('locked', locked));
+}
+
+async function renderTagChips() {
+  const tags = STATE.allTagObjects;
+  const container = _dom.tagChips;
+
+  // 差异检测：标签列表未变时跳过 DOM 重建（节省 30s 轮询开销）
+  const fp = tags.map(t => `${t.id}:${t.name}:${t.color}:${t.icon}`).join(',')
+           + '|sel=' + (STATE.selectedTag ? STATE.selectedTag.id : 'null')
+           + '|run=' + STATE.isRunning;
+  if (container._fp === fp && tags.length > 0) return;
+  container._fp = fp;
+
+  if (tags.length === 0) {
+    container._fp = null;
+    container.innerHTML = '<div class="tag-chips-empty">还没有标签，去「设置 → 标签管理」创建吧~</div>';
+    return;
+  }
+
+  container.innerHTML = tags.map(t => {
+    const iconStr = t.icon ? `<span class="tag-chip-icon">${t.icon}</span>` : '';
+    const selClass = (STATE.selectedTag && STATE.selectedTag.id === t.id) ? ' selected' : '';
+    const lockedClass = STATE.isRunning ? ' locked' : '';
+    return `<div class="tag-chip${selClass}${lockedClass}" data-tag-id="${t.id}" data-tag-name="${t.name}" data-tag-color="${t.color}" data-tag-icon="${t.icon || ''}">
+      <span class="tag-chip-dot" style="background:${t.color}"></span>
+      ${iconStr}
+      <span>${t.name}</span>
+    </div>`;
+  }).join('');
+
+  // 事件委托
+  container.onclick = e => {
+    if (STATE.isRunning) return;
+    const chip = e.target.closest('.tag-chip');
+    if (!chip) return;
+    selectTagChip(chip);
+  };
+
+  container.ondblclick = e => {
+    if (STATE.isRunning) return;
+    const chip = e.target.closest('.tag-chip');
+    if (!chip) return;
+    selectTagChip(chip);
+    // 双击直接开始
+    if (STATE.mode === 'work') {
+      startTimer();
+    }
+  };
+
+  // 更新活跃标签显示
+  updateActiveTagDisplay();
+}
+
+function selectTagChip(chip) {
+  const tagId = parseInt(chip.dataset.tagId);
+  const existing = document.querySelector('.tag-chip.selected');
+  if (existing && existing.dataset.tagId === String(tagId)) {
+    // 再次点击取消选中
+    STATE.selectedTag = null;
+    existing.classList.remove('selected');
+    updateActiveTagDisplay();
+    return;
+  }
+
+  // 取消之前的选中
+  document.querySelectorAll('.tag-chip.selected').forEach(c => c.classList.remove('selected'));
+
+  // 选中当前
+  chip.classList.add('selected');
+  STATE.selectedTag = {
+    id: tagId,
+    name: chip.dataset.tagName,
+    color: chip.dataset.tagColor,
+    icon: chip.dataset.tagIcon,
+  };
+  updateActiveTagDisplay();
+}
+
+function updateActiveTagDisplay() {
+  const display = _dom.activeTagDisplay;
+  if (STATE.selectedTag) {
+    display.style.display = 'flex';
+    _dom.activeTagDot.style.background = STATE.selectedTag.color;
+    _dom.activeTagName.textContent = STATE.selectedTag.name;
+  } else {
+    display.style.display = 'none';
+  }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -454,16 +604,25 @@ async function updateDailyGoal() {
 // ═══════════════════════════════════════════════════════════
 
 async function updateTagSuggestions() {
-  const summary = await API.getSummary();
-  STATE.allTags = (summary.top_tags || []).map(t => t.tag);
-  const datalist = document.getElementById('tag-suggestions');
-  datalist.innerHTML = STATE.allTags.map(t => `<option value="${t}">`).join('');
+  // v3: 从 tags API 获取完整标签对象
+  const tags = await API.getTags();
+  STATE.allTagObjects = tags;
+  // 恢复上次选中的标签
+  if (STATE.lastTag && !STATE.isRunning) {
+    const lastTagObj = tags.find(t => t.name === STATE.lastTag);
+    if (lastTagObj) {
+      STATE.selectedTag = lastTagObj;
+    }
+  }
+
+  // 渲染标签选择器
+  renderTagChips();
 
   // 更新看板筛选下拉
   const select = _dom.dashTagFilter;
   const currentVal = select.value;
   select.innerHTML = '<option value="">全部</option>' +
-    STATE.allTags.map(t => `<option value="${t}">${t}</option>`).join('');
+    tags.map(t => `<option value="${t.name}">${t.name}</option>`).join('');
   select.value = currentVal;
 }
 
@@ -650,6 +809,7 @@ function renderMonthHeatmap(container, year, month, data) {
 
 // Tooltip singleton — created once, reused via event delegation
 let _hmTooltip = null;
+let _hmTooltipCache = {};  // v3: 缓存 day-detail 结果
 
 function attachHmTooltip(container) {
   if (!_hmTooltip) {
@@ -658,18 +818,55 @@ function attachHmTooltip(container) {
     document.body.appendChild(_hmTooltip);
   }
 
-  // Event delegation: single listener on container for all cells
-  container.onmouseover = e => {
+  container.onmouseover = async e => {
     const cell = e.target.closest('[data-date]');
     if (!cell) return;
     const d = cell.dataset;
-    _hmTooltip.innerHTML = `<strong>${d.date}</strong><br>专注: ${fmtMinutesOnly(parseInt(d.minutes))}<br>番茄: ${d.count} 个`;
+    const minutes = parseInt(d.minutes) || 0;
+    if (minutes === 0 && parseInt(d.count || 0) === 0) {
+      // 无记录不弹 tooltip
+      _hmTooltip.classList.remove('show');
+      return;
+    }
+
+    // 先显示基础信息
+    _hmTooltip.innerHTML = `<strong>${d.date}</strong><br>总专注: ${fmtMinutesOnly(minutes)}<br>番茄: ${d.count} 个<br><span style="color:#94A3B8;font-size:11px">加载明细...</span>`;
     _hmTooltip.classList.add('show');
+    _hmTooltip._date = d.date;
+
+    // 异步加载日明细
+    const dateKey = d.date;
+    if (!_hmTooltipCache[dateKey]) {
+      _hmTooltipCache[dateKey] = API.getDayDetail(dateKey);
+    }
+    const detail = await _hmTooltipCache[dateKey];
+
+    // 确保 tooltip 还在同一日期上
+    if (_hmTooltip._date !== d.date) return;
+
+    let html = `<strong>${d.date}</strong>`;
+    html += `<hr class="hm-tooltip-divider">`;
+    html += `总专注: ${fmtMinutesOnly(detail.total_minutes)}<br>`;
+    html += `番茄数: ${detail.total_count} 个`;
+
+    if (detail.details && detail.details.length > 0) {
+      html += `<hr class="hm-tooltip-divider">`;
+      detail.details.forEach(td => {
+        html += `<div class="hm-tooltip-tag-row">
+          <span class="hm-tooltip-tag-dot" style="background:${td.color}"></span>
+          ${td.tag} &nbsp;${fmtMinutesOnly(td.total_minutes)}（${td.count} 个番茄）
+        </div>`;
+      });
+    }
+
+    _hmTooltip.innerHTML = html;
   };
+
   container.onmousemove = e => {
     _hmTooltip.style.left = (e.clientX + 14) + 'px';
     _hmTooltip.style.top = (e.clientY - 50) + 'px';
   };
+
   container.onmouseout = e => {
     if (e.target.closest('[data-date]')) {
       _hmTooltip.classList.remove('show');
@@ -863,43 +1060,248 @@ async function renderStatsCards() {
   renderTagBreakdown();
 }
 
-// ── 按标签/项目统计明细 ──────────────────────────────────
-
-const TAG_COLORS = ['#E74C3C','#27AE60','#2980B9','#F39C12','#8E44AD','#16A085','#D35400','#2C3E50'];
+// ── 按标签/项目统计明细 (v3 升级) ──────────────────────────
 
 async function renderTagBreakdown() {
-  const period = document.getElementById('tag-period-filter').value || 'all';
+  // 读取时间筛选按钮组
+  const activeBtn = document.querySelector('#tag-period-btns .tp-btn.active');
+  const period = activeBtn ? activeBtn.dataset.period : 'all';
   const data = await API.getByTag(period);
   const tags = data.tags || [];
+  const totalMin = data.total_minutes || 0;
   const maxMin = tags.length > 0 ? Math.max(...tags.map(t => t.total_minutes)) : 1;
 
-  // 总计
+  // 总计摘要
   document.getElementById('tag-breakdown-grand').textContent =
-    `总计 ${data.total_pomodoros} 个番茄 · ${fmtHoursMinutes(data.total_minutes)}`;
+    `总计 ${data.total_pomodoros} 个番茄 · ${fmtHoursMinutes(totalMin)}`;
 
   // 列表
   const list = document.getElementById('tag-breakdown-list');
   if (tags.length === 0) {
-    list.innerHTML = '<div class="tag-breakdown-empty">暂无数据，开始第一个番茄吧~</div>';
+    list.innerHTML = '<div class="tag-breakdown-empty">还没有带标签的专注记录，去选一个标签开始吧 🎯</div>';
     return;
   }
 
   list.innerHTML = tags.map((t, i) => {
-    const pct = Math.max(5, Math.round((t.total_minutes / maxMin) * 100));
-    const color = TAG_COLORS[i % TAG_COLORS.length];
+    const pct = totalMin > 0 ? Math.max(2, Math.round((t.total_minutes / totalMin) * 100)) : 0;
+    const color = t.color || '#94A3B8';
     return `
-      <div class="tag-row">
-        <div class="tag-row-name">
-          <span class="tag-row-dot" style="background:${color}"></span>
-          ${t.tag}
+      <div class="tag-detail-row" data-tag-name="${t.tag}">
+        <div class="tag-detail-left">
+          <span class="tag-detail-dot" style="background:${color}"></span>
+          <span class="tag-detail-name">${t.icon ? t.icon + ' ' : ''}${t.tag}</span>
         </div>
-        <div class="tag-row-count">${t.count} 个番茄</div>
-        <div class="tag-row-bar-wrap">
-          <div class="tag-row-bar-fill" style="width:${pct}%;background:${color}"></div>
+        <div class="tag-detail-bar-wrap">
+          <div class="tag-detail-bar-fill" style="width:${pct}%;background:${color}"></div>
         </div>
-        <div class="tag-row-time">${fmtHoursMinutes(t.total_minutes)}</div>
-      </div>`;
+        <div class="tag-detail-right">${t.count} 个番茄 · ${fmtHoursMinutes(t.total_minutes)}</div>
+      </div>
+      <div class="mini-bars-row" id="mini-${i}" data-tag="${t.tag}"></div>`;
   }).join('');
+
+  // 绑定点击联动 → 切到热力图 + 筛选
+  list.querySelectorAll('.tag-detail-row').forEach(row => {
+    row.addEventListener('click', () => {
+      const tagName = row.dataset.tagName;
+      // 切到看板
+      switchView('dashboard');
+      // 切到热力图子页
+      switchDashTab('heatmap');
+      // 设置筛选
+      _dom.dashTagFilter.value = tagName;
+      // 刷新热力图
+      renderHeatmap();
+    });
+  });
+
+  // 异步加载迷你柱状图
+  tags.forEach((t, i) => {
+    renderMiniBars(t.tag, i);
+  });
+}
+
+async function renderMiniBars(tagName, idx) {
+  const container = document.getElementById('mini-' + idx);
+  if (!container) return;
+
+  // 查询最近 7 天（含今天）
+  const today = new Date();
+  const days = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - i);
+    days.push(d.toISOString().slice(0, 10));
+  }
+
+  // 获取该标签最近 7 天的趋势数据（使用 trend API 按天）
+  try {
+    const result = await API.getTrend('day', tagName);
+    const trendData = result.data || [];
+    // 筛选最近 7 天
+    const recentMap = {};
+    trendData.forEach(d => { recentMap[d.date] = d.minutes || 0; });
+
+    const maxVal = Math.max(1, ...days.map(d => recentMap[d] || 0));
+    const color = STATE.allTagObjects.find(t => t.name === tagName)?.color || '#94A3B8';
+
+    container.innerHTML = days.map(date => {
+      const mins = recentMap[date] || 0;
+      const h = mins > 0 ? Math.max(4, (mins / maxVal) * 28) : 4;
+      const cls = mins > 0 ? '' : ' empty';
+      return `<div class="mini-bar${cls}" style="height:${h}px;background:${mins > 0 ? color : ''}">
+        ${mins > 0 ? `<span class="mini-bar-tip">${date.slice(5)}<br>${fmtHoursMinutes(mins)}</span>` : ''}
+      </div>`;
+    }).join('');
+  } catch (e) {
+    container.innerHTML = '';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  v3 标签管理（设置页）
+// ═══════════════════════════════════════════════════════════
+
+const PRESET_COLORS = [
+  '#E74C3C', '#E67E22', '#F1C40F', '#27AE60',
+  '#1ABC9C', '#2980B9', '#8E44AD', '#E91E90'
+];
+
+async function renderTagManagement(providedTags) {
+  const tags = providedTags || await API.getTags();
+  if (!providedTags) STATE.allTagObjects = tags;
+
+  const container = document.getElementById('tag-mgmt-list');
+  if (tags.length === 0) {
+    container.innerHTML = '<div class="tag-mgmt-empty">暂无标签，点击下方按钮创建第一个</div>';
+    return;
+  }
+
+  container.innerHTML = tags.map(t => `
+    <div class="tag-mgmt-row">
+      <div class="tag-mgmt-info">
+        <span class="tag-mgmt-dot" style="background:${t.color}"></span>
+        ${t.icon ? `<span class="tag-mgmt-icon">${t.icon}</span>` : ''}
+        <span class="tag-mgmt-name">${t.name}</span>
+      </div>
+      <div class="tag-mgmt-actions">
+        <button class="btn-edit-tag" data-id="${t.id}">✏ 编辑</button>
+        <button class="btn-del btn-del-tag" data-id="${t.id}" data-name="${t.name}">✕ 删除</button>
+      </div>
+    </div>
+  `).join('');
+
+  // 绑定编辑按钮
+  container.querySelectorAll('.btn-edit-tag').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = parseInt(btn.dataset.id);
+      const tag = tags.find(t => t.id === id);
+      if (tag) showTagEditModal(tag);
+    });
+  });
+
+  // 绑定删除按钮
+  container.querySelectorAll('.btn-del-tag').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = parseInt(btn.dataset.id);
+      const name = btn.dataset.name;
+      if (confirm(`确定删除标签「${name}」？\n\n删除后历史记录中的标签数据仍会保留，只是此标签将不再出现在选择器中。`)) {
+        API.deleteTag(id).then(async res => {
+          if (res.ok) {
+            await updateTagSuggestions();           // 拉取标签、更新 STATE、渲染 chips
+            renderTagManagement(STATE.allTagObjects); // 复用已加载的数据
+          } else {
+            alert('删除失败: ' + (res.error || '未知错误'));
+          }
+        });
+      }
+    });
+  });
+}
+
+function showTagEditModal(tag) {
+  const modal = document.getElementById('tag-edit-modal');
+  const title = document.getElementById('tag-edit-title');
+  const nameInput = document.getElementById('tag-edit-name');
+  const iconInput = document.getElementById('tag-edit-icon');
+  const colorsContainer = document.getElementById('tag-edit-colors');
+  const charCount = document.getElementById('tag-char-count');
+
+  // 当前编辑的标签 id（null = 新增）
+  modal._tagId = tag ? tag.id : null;
+  title.textContent = tag ? '编辑标签' : '新增标签';
+
+  nameInput.value = tag ? tag.name : '';
+  iconInput.value = tag ? (tag.icon || '') : '';
+  charCount.textContent = (tag ? tag.name.length : 0) + '/12';
+
+  // 颜色选择器
+  let selectedColor = tag ? tag.color : PRESET_COLORS[0];
+  colorsContainer.innerHTML = PRESET_COLORS.map(c =>
+    `<span class="color-picker-dot${c === selectedColor ? ' selected' : ''}"
+           style="background:${c}" data-color="${c}"></span>`
+  ).join('');
+  colorsContainer.onclick = e => {
+    const dot = e.target.closest('.color-picker-dot');
+    if (!dot) return;
+    colorsContainer.querySelectorAll('.color-picker-dot').forEach(d => d.classList.remove('selected'));
+    dot.classList.add('selected');
+    selectedColor = dot.dataset.color;
+  };
+
+  // 字符计数
+  nameInput.oninput = () => {
+    charCount.textContent = nameInput.value.length + '/12';
+  };
+
+  // 保存按钮
+  const saveBtn = document.getElementById('btn-tag-edit-save');
+  const cancelBtn = document.getElementById('btn-tag-edit-cancel');
+
+  const onSave = async () => {
+    const name = nameInput.value.trim();
+    if (!name || name.length > 12) {
+      alert('标签名需 1-12 个字符');
+      return;
+    }
+    const data = { name, color: selectedColor, icon: iconInput.value.trim() };
+    let result;
+    if (modal._tagId) {
+      result = await API.updateTag(modal._tagId, data);
+    } else {
+      result = await API.createTag(data);
+    }
+    if (result.ok) {
+      modal.classList.remove('show');
+      await updateTagSuggestions();           // 拉取标签、更新 STATE、渲染 chips
+      renderTagManagement(STATE.allTagObjects); // 复用已加载的数据
+    } else {
+      alert('操作失败: ' + (result.error || '未知错误'));
+    }
+  };
+
+  // cloneNode 清理旧监听器（闭包引用每次不同，removeEventListener 不可靠）
+  saveBtn.replaceWith(saveBtn.cloneNode(true));
+  cancelBtn.replaceWith(cancelBtn.cloneNode(true));
+  document.getElementById('btn-tag-edit-save').addEventListener('click', onSave);
+  document.getElementById('btn-tag-edit-cancel').addEventListener('click', () => {
+    modal.classList.remove('show');
+  });
+
+  modal.classList.add('show');
+  nameInput.focus();
+}
+
+// ═══════════════════════════════════════════════════════════
+//  v3 数据管理（设置页）
+// ═══════════════════════════════════════════════════════════
+
+async function loadDataPath() {
+  try {
+    const info = await API.getDataPath();
+    document.getElementById('data-path-display').value = info.db_path;
+  } catch (e) {
+    document.getElementById('data-path-display').value = '加载失败';
+  }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -916,12 +1318,19 @@ async function loadSettingsToForm() {
   document.getElementById('set-before-long').value = s.pomodoros_before_long || 4;
   document.getElementById('set-daily-goal').value = (parseInt(s.daily_goal_minutes || 120) / 60).toFixed(1);
 
+  // v3: 加载 lastTag
+  STATE.lastTag = s.last_tag || '';
+
   // 主题
   document.documentElement.setAttribute('data-theme', s.theme || 'light');
   document.getElementById('theme-toggle').textContent = (s.theme === 'dark') ? '☀️' : '🌓';
 
   // 应用计时设置
   applyTimerSettings();
+
+  // v3: 加载标签管理和数据路径
+  renderTagManagement();
+  loadDataPath();
 }
 
 async function saveSettings() {
@@ -937,6 +1346,7 @@ async function saveSettings() {
       pomodoros_before_long: document.getElementById('set-before-long').value,
       daily_goal_minutes: Math.round(parseFloat(document.getElementById('set-daily-goal').value) * 60),
       theme: STATE.settings.theme || 'light',
+      last_tag: STATE.lastTag || '',
     };
 
     const result = await API.updateSettings(data);
@@ -1077,8 +1487,14 @@ function bindEvents() {
     if (STATE.dashboardTab === 'trend') renderTrendChart();
   });
 
-  // 标签明细时间范围筛选
-  document.getElementById('tag-period-filter').addEventListener('change', renderTagBreakdown);
+  // v3: 标签明细时间范围筛选（按钮组）
+  document.querySelectorAll('#tag-period-btns .tp-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#tag-period-btns .tp-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderTagBreakdown();
+    });
+  });
 
   // 热力图视图切换
   document.querySelectorAll('.hm-view-btn').forEach(btn => {
@@ -1121,9 +1537,23 @@ function bindEvents() {
   // 设置保存
   document.getElementById('btn-save-settings').addEventListener('click', saveSettings);
 
-  // 导出
+  // v3: 标签新增按钮
+  document.getElementById('btn-add-tag').addEventListener('click', () => showTagEditModal(null));
+
+  // v3: 数据管理按钮
   document.getElementById('btn-export-json').addEventListener('click', () => API.exportData('json'));
   document.getElementById('btn-export-csv').addEventListener('click', () => API.exportData('csv'));
+  document.getElementById('btn-backup').addEventListener('click', () => API.backup());
+  document.getElementById('btn-copy-path').addEventListener('click', () => {
+    const input = document.getElementById('data-path-display');
+    input.select();
+    navigator.clipboard.writeText(input.value).then(() => {
+      const btn = document.getElementById('btn-copy-path');
+      btn.textContent = '✓ 已复制';
+      setTimeout(() => { btn.textContent = '📋 复制路径'; }, 2000);
+    }).catch(() => alert('复制失败，请手动复制'));
+  });
+  document.getElementById('btn-open-folder').addEventListener('click', () => API.openDataFolder());
 
   // 窗口尺寸变化重新绘制图表
   let resizeTimeout;
@@ -1156,7 +1586,11 @@ async function init() {
     goalPercent: $('goal-percent'),
     pomodoroCount: $('pomodoro-count'),
     todayCount: $('today-count'),
-    tagInput: $('tag-input'),
+    // v3: 标签选择器
+    tagChips: $('tag-chips'),
+    activeTagDisplay: $('active-tag-display'),
+    activeTagDot: $('active-tag-dot'),
+    activeTagName: $('active-tag-name'),
     dashTagFilter: $('dash-tag-filter'),
     hmTitle: $('hm-title'),
     heatmapContainer: $('heatmap-container'),
@@ -1185,7 +1619,7 @@ async function init() {
     updateDailyGoal();
   }, 30000);
 
-  console.log('🍅 番茄钟已就绪！');
+  console.log('🍅 番茄钟 v3 已就绪！');
 }
 
 document.addEventListener('DOMContentLoaded', init);
