@@ -412,13 +412,18 @@ function getDurations() {
   };
 }
 
-function switchToMode(newMode) {
-  STATE.mode = newMode;
+// 内部：停止当前计时器运行，清理所有计时状态字段
+function _stopTimer() {
   STATE.isRunning = false;
   STATE.sessionStart = null;
   STATE.tickStartedAt = 0;
   STATE.tickBaseLeft = 0;
   if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+}
+
+function switchToMode(newMode) {
+  STATE.mode = newMode;
+  _stopTimer();
 
   STATE.timeLeft = getDurations()[newMode];
   STATE.totalTime = STATE.timeLeft;
@@ -426,11 +431,7 @@ function switchToMode(newMode) {
 }
 
 function resetTimerState() {
-  STATE.isRunning = false;
-  STATE.sessionStart = null;
-  STATE.tickStartedAt = 0;
-  STATE.tickBaseLeft = 0;
-  if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+  _stopTimer();
 
   STATE.timeLeft = getDurations()[STATE.mode];
   STATE.totalTime = STATE.timeLeft;
@@ -899,26 +900,26 @@ function attachHmTooltip(container) {
     _hmTooltip.innerHTML = html;
   };
 
+  // tooltip 预估尺寸（内容格式固定，宽度浮动范围小）
+  const EST_TW = 200;
+  const EST_TH = 60;
+
   container.onmousemove = e => {
     // 边界检测：tooltip 靠近视口边缘时翻转到另一侧，避免被裁剪
-    const rect = _hmTooltip.getBoundingClientRect();
-    const tw = rect.width || 200;   // 首次渲染前用预估值
-    const th = rect.height || 60;
-
     let left = e.clientX + 14;
     let top = e.clientY - 50;
 
     // 右侧超出 → 翻转到鼠标左侧
-    if (left + tw > window.innerWidth - 8) {
-      left = e.clientX - tw - 14;
+    if (left + EST_TW > window.innerWidth - 8) {
+      left = e.clientX - EST_TW - 14;
     }
     // 顶部超出 → 翻转到鼠标下方
     if (top < 8) {
       top = e.clientY + 20;
     }
     // 底部超出 → 上移
-    if (top + th > window.innerHeight - 8) {
-      top = window.innerHeight - th - 8;
+    if (top + EST_TH > window.innerHeight - 8) {
+      top = window.innerHeight - EST_TH - 8;
     }
 
     _hmTooltip.style.left = left + 'px';
