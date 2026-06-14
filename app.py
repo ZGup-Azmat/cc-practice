@@ -781,27 +781,32 @@ GOALS = [
 
 @app.route('/api/goals', methods=['GET'])
 def api_get_goals():
-    """返回目标体系 + 当前进度"""
+    """返回目标体系 + 当前进度（单条 SQL 聚合，避免 N+1）"""
     db = get_db()
+    # 收集所有去重关键词 + 构建单条 LIKE OR 查询
+    all_kw = list({kw for g in GOALS for kw in g['keywords']})
+    kw_clauses = " OR ".join(["tag LIKE ?"] * len(all_kw))
+    like_params = [f'%{kw}%' for kw in all_kw]
+
+    # 单条查询：一次性取出所有匹配 tag 的分钟数
+    rows = db.execute(f"""
+        SELECT tag, SUM(duration_minutes) AS total_min
+        FROM pomodoro_records
+        WHERE status = 'completed' AND ({kw_clauses})
+        GROUP BY tag
+    """, like_params).fetchall()
+
+    # 建立 tag→minutes 映射
+    tag_min = {r['tag']: r['total_min'] for r in rows}
+
+    # 为每个 goal 聚合：遍历其关键词，查映射表累加
     goals_with_progress = []
     for g in GOALS:
-        # 统计已完成番茄数：匹配任意关键词的 tag 的总 completed 番茄数
-        done = 0
-        for kw in g['keywords']:
-            row = db.execute("""
-                SELECT COALESCE(SUM(duration_minutes), 0) AS total_min
-                FROM pomodoro_records
-                WHERE status = 'completed' AND tag LIKE ?
-            """, (f'%{kw}%',)).fetchone()
-            done += row['total_min']
-        # 按 25min 一个番茄换算
-        done_pomo = round(done / 25)
+        kw_set = set(g['keywords'])
+        done_min = sum(tag_min.get(t, 0) for t in tag_min if any(kw in t for kw in kw_set))
+        done_pomo = round(done_min / 25)
         pct = min(100, round(done_pomo / g['totalPomo'] * 100, 1)) if g['totalPomo'] > 0 else 0
-        goals_with_progress.append({
-            **g,
-            'donePomo': done_pomo,
-            'pct': pct,
-        })
+        goals_with_progress.append({**g, 'donePomo': done_pomo, 'pct': pct})
     return jsonify({'goals': goals_with_progress})
 
 

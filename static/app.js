@@ -530,8 +530,8 @@ function setTagsLocked(locked) {
   _dom.tagChips.querySelectorAll('.tag-chip').forEach(c => c.classList.toggle('locked', locked));
 }
 
-async function renderTagChips() {
-  // 计时页标签选择器已移除，安全退出
+async function _renderTagChipsUnused() {
+  // 已废弃：计时页标签选择器已移除
   if (!_dom.tagChips) return;
   const allTags = STATE.allTagObjects;
   const container = _dom.tagChips;
@@ -1438,7 +1438,7 @@ function showTagEditModal(tag) {
     if (result.ok) {
       modal.classList.remove('show');
       await updateTagSuggestions();
-      renderTagManagement(STATE.allTagObjects);
+      renderTasksTagMgmt();
     } else {
       alert('操作失败: ' + (result.error || '未知错误'));
     }
@@ -1502,7 +1502,7 @@ async function loadSettingsToForm() {
   applyTimerSettings();
 
   // v3: 加载标签管理和数据路径
-  renderTagManagement();
+  renderTasksTagMgmt();
   loadDataPath();
 }
 
@@ -1579,16 +1579,8 @@ function switchView(view) {
   document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
   document.querySelector(`.nav-tab[data-view="${view}"]`).classList.add('active');
 
-  if (view === 'dashboard') {
-    // 默认热力图
-    switchDashTab(STATE.dashboardTab);
-  }
-  if (view === 'tasks') {
-    loadDailyTasks();
-  }
-  if (view === 'goals') {
-    loadGoals();
-  }
+  const loaders = { dashboard: () => switchDashTab(STATE.dashboardTab), tasks: loadDailyTasks, goals: loadGoals };
+  if (loaders[view]) loaders[view]();
 }
 
 function switchDashTab(tab) {
@@ -1809,7 +1801,6 @@ async function startTaskTimer(taskIndex) {
     await API.updateSettings({ last_tag: tag.name });
     if (STATE.mode !== 'work') switchToMode('work');
     updateActiveTagDisplay();
-    renderTagChips();
     updateTimerDisplay();
   }
 
@@ -1845,14 +1836,24 @@ function navigateTasksDate(delta) {
 //  v5 目标体系 模块
 // ═══════════════════════════════════════════════════════════
 
+let _lastGoalsJSON = '';
+
 async function loadGoals() {
   try {
     const data = await API.getGoals();
+    const json = JSON.stringify(data.goals);
+    if (json === _lastGoalsJSON) return;
+    _lastGoalsJSON = json;
     renderGoals(data.goals || []);
   } catch (e) {
-    document.getElementById('goals-container').innerHTML =
-      '<div class="goals-summary">加载失败，请稍后重试</div>';
+    document.getElementById('goals-container').textContent = '加载失败，请稍后重试';
   }
+}
+
+function pctToColor(pct) {
+  if (pct >= 60) return '#27AE60';
+  if (pct >= 30) return '#E67E22';
+  return '#E74C3C';
 }
 
 function renderGoals(goals) {
@@ -1866,7 +1867,7 @@ function renderGoals(goals) {
   </div>`;
 
   goals.forEach(g => {
-    const pctColor = g.pct >= 60 ? '#27AE60' : g.pct >= 30 ? '#E67E22' : '#E74C3C';
+    const pctColor = pctToColor(g.pct);
     html += `<div class="goal-card" style="border-left-color:${g.color}">
       <div class="goal-card-header">
         <div class="goal-card-title">

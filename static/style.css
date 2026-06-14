@@ -696,37 +696,6 @@ body {
   width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
 }
 
-/* ════════════════ 标签管理 ════════════════ */
-.tag-mgmt-list { display: flex; flex-direction: column; gap: 6px; }
-.tag-mgmt-row {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 12px;
-  background: var(--bg); border-radius: var(--radius-sm);
-  transition: background var(--transition);
-}
-.tag-mgmt-row:hover { background: var(--border); }
-.tag-mgmt-info {
-  display: flex; align-items: center; gap: 10px; flex: 1;
-}
-.tag-mgmt-dot {
-  width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0;
-}
-.tag-mgmt-name {
-  font-weight: 600; font-size: 14px; color: var(--text);
-}
-.tag-mgmt-icon { font-size: 16px; }
-.tag-mgmt-actions { display: flex; gap: 4px; }
-.tag-mgmt-actions button {
-  padding: 4px 10px; border: 1px solid var(--border);
-  border-radius: var(--radius-sm); background: var(--card-bg);
-  color: var(--text-secondary); font-size: 12px; cursor: pointer;
-  transition: all var(--transition);
-}
-.tag-mgmt-actions button:hover { border-color: var(--accent); color: var(--accent); }
-.tag-mgmt-actions .btn-del:hover { border-color: var(--accent); color: var(--accent); }
-.tag-mgmt-empty {
-  text-align: center; color: var(--text-muted); padding: 16px 0; font-size: 13px;
-}
 .btn-sm { font-size: 12px; padding: 6px 14px; }
 
 /* ── 颜色选择器 ─────────────────────────────────────── */
