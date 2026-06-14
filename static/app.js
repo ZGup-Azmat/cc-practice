@@ -35,6 +35,12 @@ const STATE = {
   allTagObjects: [],      // v3: 完整标签对象 [{id, name, color, icon, created_at}]
   selectedTag: null,       // v3: 当前选中的标签对象
   lastTag: '',             // v3: 上次使用的标签名
+
+  // v4: 每日任务
+  tasksDate: new Date().toISOString().slice(0, 10),
+  dailyTasks: [],
+  tasksDates: [],
+  activeTaskIndex: null,   // 当前选中/计时的任务索引
 };
 
 const RING_CIRCUMFERENCE = 2 * Math.PI * 130; // ~816.8
@@ -165,6 +171,23 @@ const API = {
   },
   async getDataPath() {
     const r = await fetch('/api/data-path');
+    return r.json();
+  },
+
+  // ── v4 每日任务 ──────────────────────────────────────────
+  async getDailyTasks(date) {
+    const r = await fetch('/api/daily-tasks?date=' + date);
+    return r.json();
+  },
+  async toggleDailyTask(date, name, pomodoroCount, done) {
+    const r = await fetch('/api/daily-tasks/toggle', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date, name, pomodoroCount, done }),
+    });
+    return r.json();
+  },
+  async getTasksHistory() {
+    const r = await fetch('/api/daily-tasks/history');
     return r.json();
   },
 };
@@ -379,24 +402,31 @@ function stopTimer() {
   if (!STATE.sessionStart) return;
 
   const elapsedSec = STATE.totalTime - STATE.timeLeft;
-  if (elapsedSec <= 0) return;  // 还没开始就不记录
 
   STATE.isRunning = false;
   if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
 
-  const minutes = Math.round(elapsedSec / 60);
-  const record = {
-    date: new Date().toISOString().slice(0, 10),
-    start_time: STATE.sessionStart,
-    duration_minutes: minutes,
-    status: 'abandoned',
-    tag: STATE.selectedTag ? STATE.selectedTag.name : '',
-  };
+  // ≥5 分钟才保留，不足丢弃
+  if (elapsedSec >= 300) {
+    const minutes = Math.round(elapsedSec / 60);
+    const record = {
+      date: new Date().toISOString().slice(0, 10),
+      start_time: STATE.sessionStart,
+      duration_minutes: minutes,
+      status: 'completed',
+      tag: STATE.selectedTag ? STATE.selectedTag.name : '',
+    };
 
-  API.createRecord(record).then(() => {
+    API.createRecord(record).then(() => {
+      checkActiveTaskProgress();
+      resetTimerState();
+      refreshAllData();
+    });
+  } else {
+    // 不足5分钟，直接丢弃
     resetTimerState();
     refreshAllData();
-  });
+  }
 }
 
 function skipBreak() {
@@ -426,6 +456,9 @@ function onTimerEnd() {
 
     // 重置计时状态
     resetTimerState();
+
+    // 检查任务进度
+    checkActiveTaskProgress();
 
     // 弹反思窗口
     showReflectionModal();
@@ -1542,6 +1575,9 @@ function switchView(view) {
     // 默认热力图
     switchDashTab(STATE.dashboardTab);
   }
+  if (view === 'tasks') {
+    loadDailyTasks();
+  }
 }
 
 function switchDashTab(tab) {
@@ -1566,12 +1602,231 @@ async function refreshAllData() {
   await updateDailyGoal();
   await updateTagSuggestions();
 
+  // 如果当前在任务页，也刷新任务
+  if (STATE.currentView === 'tasks') {
+    await loadDailyTasks();
+  }
+
   // 如果当前在看板，刷新对应面板
   if (STATE.currentView === 'dashboard') {
     if (STATE.dashboardTab === 'heatmap') renderHeatmap();
     if (STATE.dashboardTab === 'trend') renderTrendChart();
     if (STATE.dashboardTab === 'cards') renderStatsCards();
   }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  v4 每日任务 模块
+// ═══════════════════════════════════════════════════════════
+
+let _taskQuickCreateOpen = false;
+
+function toggleQuickCreate() {
+  _taskQuickCreateOpen = !_taskQuickCreateOpen;
+  const panel = document.getElementById('tasks-quick-create-panel');
+  panel.style.display = _taskQuickCreateOpen ? 'block' : 'none';
+}
+
+async function submitQuickCreate() {
+  const nameInput = document.getElementById('qc-task-name');
+  const typeBtns = document.querySelectorAll('#qc-task-type .tt-btn.active');
+  const pomoInput = document.getElementById('qc-task-pomo');
+  const name = nameInput.value.trim();
+  if (!name || name.length > 12) { alert('任务名需 1-12 个字符'); return; }
+
+  const tagType = typeBtns.length > 0 ? typeBtns[0].dataset.type : 'once';
+  const pomoCount = parseInt(pomoInput.value) || 0;
+
+  const result = await API.createTag({
+    name, color: PRESET_COLORS[Math.floor(Math.random() * PRESET_COLORS.length)],
+    icon: '', target_pomodoros: pomoCount > 0 ? pomoCount : null, tag_type: tagType,
+  });
+
+  if (result.ok) {
+    nameInput.value = ''; pomoInput.value = '';
+    toggleQuickCreate();
+    await updateTagSuggestions();
+    const tag = STATE.allTagObjects.find(t => t.id === result.id);
+    if (tag) {
+      STATE.selectedTag = { id: tag.id, name: tag.name, color: tag.color, icon: tag.icon || '' };
+      STATE.lastTag = tag.name;
+      await API.updateSettings({ last_tag: tag.name });
+      if (STATE.mode !== 'work') switchToMode('work');
+      updateActiveTagDisplay(); updateTimerDisplay();
+      switchView('timer');
+      startTimer();
+    }
+  } else {
+    alert('创建失败: ' + (result.error || '未知错误'));
+  }
+}
+
+async function loadTasksHistory() {
+  try {
+    const h = await API.getTasksHistory();
+    STATE.tasksDates = h.dates || [];
+    if (h.dates && h.dates.length > 0 && !h.dates.includes(h.today)) {
+      STATE.tasksDate = h.dates[0];
+    } else {
+      STATE.tasksDate = h.today;
+    }
+  } catch (e) { /* ignore */ }
+}
+
+async function loadDailyTasks() {
+  try {
+    const result = await API.getDailyTasks(STATE.tasksDate);
+    STATE.dailyTasks = result.tasks || [];
+    renderDailyTasks();
+  } catch (e) {
+    STATE.dailyTasks = [];
+    renderDailyTasks();
+  }
+}
+
+function renderDailyTasks() {
+  const container = document.getElementById('tasks-container');
+  const tasks = STATE.dailyTasks;
+  document.getElementById('tasks-date').textContent = STATE.tasksDate;
+
+  const dateIdx = STATE.tasksDates.indexOf(STATE.tasksDate);
+  document.getElementById('tasks-prev').disabled = dateIdx >= STATE.tasksDates.length - 1;
+  document.getElementById('tasks-next').disabled = dateIdx <= 0;
+
+  if (tasks.length === 0) {
+    document.getElementById('tasks-empty').style.display = 'block';
+    container.innerHTML = '';
+    container.appendChild(document.getElementById('tasks-empty'));
+    updateTasksProgress(0, 0);
+    return;
+  }
+  document.getElementById('tasks-empty').style.display = 'none';
+
+  const groups = { '🔴High': [], '🟡Medium': [], '🟢Low': [], '__other': [] };
+  tasks.forEach(t => {
+    const key = groups[t.priority] ? t.priority : '__other';
+    groups[key].push(t);
+  });
+
+  let doneCount = 0;
+  let html = '';
+  ['🔴High', '🟡Medium', '🟢Low'].forEach(pri => {
+    const g = groups[pri];
+    if (!g || g.length === 0) return;
+    g.forEach(t => { if (t.done) doneCount++; });
+    const icon = pri === '🔴High' ? '🔥' : pri === '🟡Medium' ? '📌' : '✅';
+    html += '<div class="task-group">';
+    html += '<div class="task-group-header">' + icon + ' ' + pri.replace('🔴','').replace('🟡','').replace('🟢','') + ' <span class="group-count">' + g.length + '项</span></div>';
+    g.forEach(t => {
+      const pc = pri === '🔴High' ? 'priority-high' : pri === '🟡Medium' ? 'priority-medium' : 'priority-low';
+      const dc = t.done ? ' done' : '';
+      const pomoInfo = t.pomodoroCount > 0
+        ? (t.done
+            ? '<span class="task-card-pomo done-pomo">🍅 ✓</span>'
+            : '<span class="task-card-pomo">🍅 ' + (t.donePomodoros || 0) + '/' + t.pomodoroCount + '</span>')
+        : '';
+      const btnHtml = t.done
+        ? '<span class="task-start-btn done-btn" title="已完成">✓</span>'
+        : '<button class="task-start-btn" data-task-index="' + t.index + '" title="开始专注">▶</button>';
+      html += '<div class="task-card ' + pc + dc + '" data-task-index="' + t.index + '">';
+      html += '<div class="task-card-check">' + (t.done ? '✓' : '') + '</div>';
+      html += '<div class="task-card-body">';
+      html += '<div class="task-card-name">' + t.name + '</div>';
+      html += '<div class="task-card-domain">' + t.domain + ' · ' + t.estTime + '</div>';
+      html += '</div>';
+      html += '<div class="task-card-meta">';
+      html += pomoInfo;
+      html += btnHtml;
+      html += '</div></div>';
+    });
+    html += '</div>';
+  });
+
+  container.innerHTML = html;
+  updateTasksProgress(doneCount, tasks.length);
+
+  // Event delegation for play button
+  container.onclick = async e => {
+    const btn = e.target.closest('.task-start-btn');
+    if (!btn || btn.classList.contains('done-btn')) return;
+    const idx = parseInt(btn.dataset.taskIndex);
+    e.stopPropagation();
+    await startTaskTimer(idx);
+  };
+
+  // Done cards: click to un-done
+  container.querySelectorAll('.task-card.done').forEach(card => {
+    card.addEventListener('click', async () => {
+      const idx = parseInt(card.dataset.taskIndex);
+      const task = STATE.dailyTasks.find(t => t.index === idx);
+      if (!task || !task.done) return;
+      await API.toggleDailyTask(STATE.tasksDate, task.name, task.pomodoroCount, false);
+      await loadDailyTasks();
+      await updateTagSuggestions();
+    });
+  });
+}
+
+function updateTasksProgress(done, total) {
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  document.getElementById('tasks-progress-fill').style.width = pct + '%';
+  document.getElementById('tasks-progress-text').textContent = done + ' / ' + total + ' 已完成';
+  document.getElementById('tasks-progress-pct').textContent = pct + '%';
+}
+
+async function startTaskTimer(taskIndex) {
+  const task = STATE.dailyTasks.find(t => t.index === taskIndex);
+  if (!task || task.done) return;
+  STATE.activeTaskIndex = taskIndex;
+
+  // Ensure tag exists
+  let tag = STATE.allTagObjects.find(t => t.name === task.name && (t.tag_type === 'once' || t.tag_type === 'daily' || t.tag_type === 'long'));
+  if (!tag) {
+    const result = await API.createTag({
+      name: task.name,
+      color: PRESET_COLORS[Math.floor(Math.random() * PRESET_COLORS.length)],
+      icon: '',
+      target_pomodoros: task.pomodoroCount || null,
+      tag_type: 'once',
+    });
+    if (result.ok) { await updateTagSuggestions(); tag = STATE.allTagObjects.find(t => t.id === result.id); }
+  }
+
+  if (tag) {
+    STATE.selectedTag = { id: tag.id, name: tag.name, color: tag.color, icon: tag.icon || '' };
+    STATE.lastTag = tag.name;
+    await API.updateSettings({ last_tag: tag.name });
+    if (STATE.mode !== 'work') switchToMode('work');
+    updateActiveTagDisplay();
+    renderTagChips();
+    updateTimerDisplay();
+  }
+
+  switchView('timer');
+  // Auto-start the timer
+  setTimeout(() => startTimer(), 300);
+}
+
+async function checkActiveTaskProgress() {
+  if (STATE.activeTaskIndex === null) return;
+  const task = STATE.dailyTasks.find(t => t.index === STATE.activeTaskIndex);
+  if (!task || !task.name) return;
+  await updateTagSuggestions();
+  const tag = STATE.allTagObjects.find(t => t.name === task.name && t.tag_type === 'once');
+  if (tag && tag.target_pomodoros && (tag.all_done || 0) >= tag.target_pomodoros) {
+    await API.toggleDailyTask(STATE.tasksDate, task.name, task.pomodoroCount, true);
+    STATE.activeTaskIndex = null;
+    if (STATE.currentView === 'tasks') await loadDailyTasks();
+  }
+}
+
+function navigateTasksDate(delta) {
+  const idx = STATE.tasksDates.indexOf(STATE.tasksDate);
+  if (idx < 0) return;
+  const newIdx = idx + delta;
+  if (newIdx < 0 || newIdx >= STATE.tasksDates.length) return;
+  STATE.tasksDate = STATE.tasksDates[newIdx];
+  loadDailyTasks();
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1719,6 +1974,28 @@ function bindEvents() {
     }
   });
 
+  // ── v4: 任务导航按钮 ─────────────────────────────────────
+  document.getElementById('tasks-prev').addEventListener('click', () => navigateTasksDate(1));
+  document.getElementById('tasks-next').addEventListener('click', () => navigateTasksDate(-1));
+  document.getElementById('tasks-today').addEventListener('click', async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    if (STATE.tasksDate !== today) {
+      STATE.tasksDate = today;
+      await loadDailyTasks();
+    }
+  });
+
+  // v4: 快速创建区的类型切换按钮
+  const qcTypeBtns = document.querySelectorAll('#qc-task-type .tt-btn');
+  if (qcTypeBtns) {
+    qcTypeBtns.forEach(b => {
+      b.addEventListener('click', () => {
+        qcTypeBtns.forEach(bb => bb.classList.remove('active'));
+        b.classList.add('active');
+      });
+    });
+  }
+
   // ── 关闭弹窗按钮 ─────────────────────────────────────
   document.getElementById('btn-close-save').addEventListener('click', async () => {
     if (STATE.isRunning && STATE.sessionStart) {
@@ -1785,6 +2062,7 @@ async function init() {
   await loadSettingsToForm();
   await updateDailyGoal();
   await updateTagSuggestions();
+  await loadTasksHistory();
   updateTimerDisplay();
   bindEvents();
   requestNotification();
@@ -1795,6 +2073,9 @@ async function init() {
       if (STATE.dashboardTab === 'heatmap') renderHeatmap();
       if (STATE.dashboardTab === 'trend') renderTrendChart();
       if (STATE.dashboardTab === 'cards') renderStatsCards();
+    }
+    if (STATE.currentView === 'tasks') {
+      loadDailyTasks();
     }
     // 始终刷新目标进度
     updateDailyGoal();

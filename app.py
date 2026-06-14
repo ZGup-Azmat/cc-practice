@@ -119,7 +119,7 @@ def _get_tag_colors(db):
     return {r['name']: r for r in rows}
 
 GHOST_COLOR = '#94A3B8'   # 已删除标签的 fallback 灰色
-VALID_TAG_TYPES = {'daily', 'once'}
+VALID_TAG_TYPES = {'daily', 'once', 'long'}
 
 def _parse_target_pomodoros(value):
     """解析目标番茄数，非法/超出范围返回 None"""
@@ -753,6 +753,156 @@ def api_data_path():
         'db_path': str(DB_PATH),
         'folder': str(BASE_DIR),
     })
+
+# ── 每日待办任务 API ─────────────────────────────────────
+
+# CSV 每日待办文件夹路径（与 first-cc 相邻的 TUM申请 目录）
+_CSV_TASKS_DIR = None
+
+def _get_csv_tasks_dir():
+    global _CSV_TASKS_DIR
+    if _CSV_TASKS_DIR is None:
+        candidate = BASE_DIR.parent / 'TUM申请' / '每日待办'
+        if candidate.exists():
+            _CSV_TASKS_DIR = candidate
+        else:
+            _CSV_TASKS_DIR = BASE_DIR / '每日待办'  # fallback
+    return _CSV_TASKS_DIR
+
+def parse_task_csv(filepath):
+    """解析待办 CSV，返回任务列表（不含完成状态）"""
+    tasks = []
+    if not filepath.exists():
+        return tasks
+    with open(filepath, 'r', encoding='utf-8') as f:
+        reader = csv.reader(f)
+        header_skipped = False
+        for i, row in enumerate(reader):
+            if not row or not any(cell.strip() for cell in row):
+                continue
+            if row[0].startswith('#'):
+                continue
+            # 跳过 CSV 表头行
+            if not header_skipped and row[0].strip().lower().startswith('task name'):
+                header_skipped = True
+                continue
+            header_skipped = True
+            name = row[0].strip() if len(row) > 0 else ''
+            domain = row[2].strip() if len(row) > 2 else ''
+            est_time = row[3].strip() if len(row) > 3 else ''
+            pomo_str = row[4].strip() if len(row) > 4 else '0'
+            priority = row[5].strip() if len(row) > 5 else '🟡Medium'
+            try:
+                pomo_count = int(pomo_str) if pomo_str else 0
+            except ValueError:
+                pomo_count = 0
+            if not name:
+                continue
+            tasks.append({
+                'index': len(tasks),
+                'name': name,
+                'domain': domain,
+                'estTime': est_time,
+                'pomodoroCount': pomo_count,
+                'priority': priority,
+            })
+    return tasks
+
+@app.route('/api/daily-tasks', methods=['GET'])
+def api_daily_tasks():
+    """读取当日待办 CSV + 合并标签完成状态"""
+    db = get_db()
+    date = request.args.get('date', datetime.date.today().isoformat())
+    csv_dir = _get_csv_tasks_dir()
+    filepath = csv_dir / f'{date}.csv'
+
+    tasks = parse_task_csv(filepath)
+
+    if not tasks:
+        return jsonify({'date': date, 'tasks': [], 'hasCsv': False})
+
+    # 查询所有 tag_type='once' 的标签及其今日完成数
+    today = datetime.date.today().isoformat()
+    once_tags = {}
+    for r in db.execute("""
+        SELECT t.name, t.target_pomodoros, t.id,
+               (SELECT COUNT(*) FROM pomodoro_records pr
+                WHERE pr.tag = t.name AND pr.date = ? AND pr.status = 'completed') AS today_done,
+               (SELECT COUNT(*) FROM pomodoro_records pr
+                WHERE pr.tag = t.name AND pr.status = 'completed') AS all_done
+        FROM tags t WHERE t.tag_type = 'once'
+    """, (today,)).fetchall():
+        once_tags[r['name']] = {'id': r['id'], 'today_done': r['today_done'],
+                                 'all_done': r['all_done'], 'target': r['target_pomodoros'] or 0}
+
+    # 合并状态
+    for task in tasks:
+        tinfo = once_tags.get(task['name'])
+        if tinfo and tinfo['target'] > 0:
+            task['tagId'] = tinfo['id']
+            task['donePomodoros'] = tinfo['today_done']
+            task['targetPomodoros'] = tinfo['target']
+            task['done'] = tinfo['today_done'] >= tinfo['target']
+        else:
+            task['tagId'] = None
+            task['donePomodoros'] = 0
+            task['targetPomodoros'] = task['pomodoroCount']
+            task['done'] = False
+
+    # CSV header 的 Status 列不作为状态源
+
+    return jsonify({
+        'date': date,
+        'tasks': tasks,
+        'hasCsv': True,
+    })
+
+@app.route('/api/daily-tasks/toggle', methods=['POST'])
+def api_daily_tasks_toggle():
+    """手动切换任务完成状态"""
+    db = get_db()
+    data = request.get_json() or {}
+    task_name = (data.get('name') or '').strip()
+    pomodoro_count = data.get('pomodoroCount', 0)
+    mark_done = data.get('done', False)
+
+    if not task_name:
+        return jsonify({'ok': False, 'error': '任务名不能为空'}), 400
+
+    now = datetime.datetime.now().isoformat()
+    existing = db.execute("SELECT * FROM tags WHERE name = ? AND tag_type = 'once'",
+                          (task_name,)).fetchone()
+
+    if mark_done:
+        if not existing:
+            db.execute("""
+                INSERT INTO tags (name, color, icon, target_pomodoros, tag_type, created_at)
+                VALUES (?, ?, ?, ?, 'once', ?)
+            """, (task_name, '#27AE60', '', pomodoro_count if pomodoro_count > 0 else None, now))
+        db.commit()
+        return jsonify({'ok': True, 'action': 'created'})
+    else:
+        if existing:
+            db.execute("DELETE FROM tags WHERE id = ?", (existing['id'],))
+            db.commit()
+        return jsonify({'ok': True, 'action': 'deleted'})
+
+@app.route('/api/daily-tasks/history', methods=['GET'])
+def api_daily_tasks_history():
+    """返回有 CSV 文件的日期列表"""
+    csv_dir = _get_csv_tasks_dir()
+    dates = []
+    if csv_dir.exists():
+        for f in sorted(csv_dir.glob('*.csv'), reverse=True):
+            name = f.stem  # YYYY-MM-DD
+            if len(name) == 10 and name[4] == '-' and name[7] == '-':
+                dates.append(name)
+    today = datetime.date.today().isoformat()
+    return jsonify({
+        'dates': dates,
+        'today': today,
+    })
+
 
 # ── JS-API 桥接 ────────────────────────────────────────────
 
