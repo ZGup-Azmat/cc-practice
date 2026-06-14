@@ -147,6 +147,31 @@ def ensure_db():
 def index():
     return app.send_static_file('index.html')
 
+@app.route('/mini')
+def mini():
+    return app.send_static_file('mini.html')
+
+# 计时器状态（供迷你窗轮询）
+_timer_state = {
+    'isRunning': False,
+    'timeLeft': 25 * 60,
+    'totalTime': 25 * 60,
+    'mode': 'work',
+    'selectedTag': '',
+}
+
+@app.route('/api/timer-state', methods=['GET'])
+def api_get_timer_state():
+    return jsonify(_timer_state)
+
+@app.route('/api/timer-state', methods=['PUT'])
+def api_update_timer_state():
+    data = request.get_json() or {}
+    for k in ('isRunning', 'timeLeft', 'totalTime', 'mode', 'selectedTag'):
+        if k in data:
+            _timer_state[k] = data[k]
+    return jsonify({'ok': True})
+
 # --- 设置 API ---
 
 @app.route('/api/settings', methods=['GET'])
@@ -728,6 +753,76 @@ def api_data_path():
         'folder': str(BASE_DIR),
     })
 
+# ── JS-API 桥接 ────────────────────────────────────────────
+
+class Api:
+    """暴露给前端 JS 的方法，通过 window.pywebview.api 调用"""
+    def minimize(self):
+        """最小化主窗口"""
+        try:
+            import webview
+            win = webview.windows[0]
+            win.minimize()
+        except Exception:
+            pass
+
+    def close_app(self):
+        """退出应用"""
+        os._exit(0)
+
+    def show_mini(self):
+        """显示圆形悬浮窗"""
+        threading.Thread(target=_show_mini_window, daemon=True).start()
+
+    def hide_mini(self):
+        """关闭圆形悬浮窗"""
+        global _mini_window
+        if _mini_window:
+            try:
+                _mini_window.destroy()
+            except Exception:
+                pass
+            _mini_window = None
+
+    def get_timer_state(self):
+        """返回当前计时状态（供迷你窗获取）"""
+        return _timer_state
+
+    def update_timer_state(self, state):
+        """主窗口同步状态到服务端"""
+        global _timer_state
+        if state:
+            for k in ('isRunning', 'timeLeft', 'totalTime', 'mode', 'selectedTag'):
+                if k in state:
+                    _timer_state[k] = state[k]
+
+_mini_window = None
+
+def _show_mini_window():
+    """创建圆形悬浮窗（非阻塞，在独立线程中）"""
+    global _mini_window
+    try:
+        import webview
+        if _mini_window:
+            try:
+                _mini_window.destroy()
+            except Exception:
+                pass
+        _mini_window = webview.create_window(
+            title='Tomato Mini',
+            url=f'http://{HOST}:{PORT}/mini',
+            width=210,
+            height=240,
+            frameless=True,
+            on_top=True,
+            resizable=False,
+            transparent=False,
+        )
+        _mini_window.set_on_top(True)
+        webview.start()
+    except Exception:
+        _mini_window = None
+
 # ── 系统托盘 ──────────────────────────────────────────────
 
 def create_tray_icon():
@@ -738,11 +833,15 @@ def create_tray_icon():
     except ImportError:
         return None, None
 
-    # 生成番茄图标
-    img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    draw.ellipse([4, 8, 60, 60], fill='#E74C3C', outline='#C0392B', width=2)
-    draw.ellipse([20, 4, 44, 20], fill='#27AE60', outline='#1E8449', width=1)  # 顶部绿叶
+    # 优先使用下载的图标，否则代码绘制
+    icon_file = BASE_DIR / 'static' / 'icon.png'
+    if icon_file.exists():
+        img = Image.open(icon_file).resize((64, 64), Image.LANCZOS)
+    else:
+        img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        draw.ellipse([4, 8, 60, 60], fill='#E74C3C', outline='#C0392B', width=2)
+        draw.ellipse([20, 4, 44, 20], fill='#27AE60', outline='#1E8449', width=1)
 
     def on_open(icon, item):
         webbrowser.open(f'http://{HOST}:{PORT}')
@@ -804,15 +903,23 @@ def run_desktop_mode():
     flask_thread = threading.Thread(target=_start_flask, daemon=True)
     flask_thread.start()
 
-    # 创建原生窗口
+    # 图标文件
+    icon_path = str(BASE_DIR / 'static' / 'tomato.ico')
+    if not os.path.exists(icon_path):
+        icon_path = None
+
+    # 创建无边框原生窗口
     webview.create_window(
         title='Tomato Timer',
         url=f'http://{HOST}:{PORT}',
         width=480,
         height=780,
-        min_size=(420, 640),
+        min_size=(320, 480),
+        frameless=True,
+        easy_drag=True,
         text_select=False,
-        confirm_close=True,
+        js_api=Api(),
+        icon=str(BASE_DIR / 'static' / 'tomato.ico'),
     )
 
     # 窗口关闭时退出

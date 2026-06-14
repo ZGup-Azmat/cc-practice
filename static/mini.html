@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tomato Mini</title>
+<link rel="stylesheet" href="/mini.css">
+</head>
+<body>
+
+<div class="mini-circle" id="mini-circle">
+  <div class="mini-icon">🍅</div>
+  <div class="mini-time" id="mini-time">25:00</div>
+  <div class="mini-phase" id="mini-phase">准备开始</div>
+  <div class="mini-tag" id="mini-tag"></div>
+  <div class="mini-buttons">
+    <button class="mini-btn" id="mini-btn-toggle" title="暂停/继续">⏯</button>
+    <button class="mini-btn mini-btn-stop" id="mini-btn-stop" title="终止">⏹</button>
+  </div>
+</div>
+
+<script>
+// ── 迷你窗逻辑 ────────────────────────────────────────
+const $ = id => document.getElementById(id);
+
+let state = {
+  isRunning: false,
+  timeLeft: 25*60,
+  totalTime: 25*60,
+  mode: 'work',
+  tickStartedAt: 0,
+  tickBaseLeft: 0,
+};
+
+function fmtTime(s) {
+  const m = Math.floor(s / 60), sec = s % 60;
+  return `${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+}
+
+const MODE_LABELS = { work: '🍅 专注中', short_break: '☕ 短休息', long_break: '🧘 长休息' };
+
+async function pollState() {
+  try {
+    const res = await fetch('/api/timer-state');
+    const s = await res.json();
+    state = s;
+    updateDisplay();
+  } catch(e) {}
+}
+
+function updateDisplay() {
+  // 计算当前剩余时间
+  let left = state.timeLeft;
+  if (state.isRunning && state.tickStartedAt) {
+    const elapsed = Math.floor((Date.now() - state.tickStartedAt) / 1000);
+    left = Math.max(0, state.tickBaseLeft - elapsed);
+  }
+  $('mini-time').textContent = fmtTime(left);
+  $('mini-phase').textContent = state.isRunning
+    ? (MODE_LABELS[state.mode] || '专注中')
+    : (left === state.totalTime ? '准备开始' : '已暂停');
+  $('mini-tag').textContent = state.selectedTag || '';
+  $('mini-btn-toggle').textContent = state.isRunning ? '⏸' : '▶';
+
+  // 圆环背景色
+  const colors = { work: '#E74C3C', short_break: '#27AE60', long_break: '#2980B9' };
+  $('mini-circle').style.borderColor = colors[state.mode] || '#E74C3C';
+}
+
+// 点击圆形 → 回到主窗口
+$('mini-circle').addEventListener('click', async e => {
+  if (e.target.tagName === 'BUTTON') return; // 不拦截按钮点击
+  try {
+    if (window.pywebview) {
+      await window.pywebview.api.hide_mini();
+    }
+  } catch(e) {}
+});
+
+// 暂停/继续
+$('mini-btn-toggle').addEventListener('click', async e => {
+  e.stopPropagation();
+  const newRunning = !state.isRunning;
+  await fetch('/api/timer-state', {
+    method: 'PUT',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      isRunning: newRunning,
+      tickStartedAt: newRunning ? Date.now() : 0,
+      tickBaseLeft: newRunning
+        ? (state.tickStartedAt
+            ? Math.max(0, state.tickBaseLeft - Math.floor((Date.now() - state.tickStartedAt)/1000))
+            : state.timeLeft)
+        : 0,
+    }),
+  });
+  await pollState();
+});
+
+// 终止
+$('mini-btn-stop').addEventListener('click', async e => {
+  e.stopPropagation();
+  await fetch('/api/timer-state', {
+    method: 'PUT',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      isRunning: false,
+      timeLeft: state.totalTime,
+      tickStartedAt: 0,
+      tickBaseLeft: 0,
+    }),
+  });
+  await pollState();
+});
+
+// 每 1 秒轮询
+setInterval(pollState, 1000);
+pollState();
+</script>
+
+</body>
+</html>

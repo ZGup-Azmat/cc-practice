@@ -324,6 +324,7 @@ function startTimer() {
   setTagsLocked(true);
   updateTimerDisplay();
   timerInterval = setInterval(timerTick, 1000);
+  syncTimerState();
 }
 
 function pauseTimer() {
@@ -331,6 +332,47 @@ function pauseTimer() {
   if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
   setTagsLocked(false);
   updateTimerDisplay();
+  syncTimerState();
+}
+
+// ── 计时器状态同步（供迷你窗轮询）──────────────────────────
+function syncTimerState() {
+  fetch('/api/timer-state', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      isRunning: STATE.isRunning,
+      timeLeft: STATE.timeLeft,
+      totalTime: STATE.totalTime,
+      mode: STATE.mode,
+      selectedTag: STATE.selectedTag ? STATE.selectedTag.name : '',
+      tickStartedAt: STATE.tickStartedAt,
+      tickBaseLeft: STATE.tickBaseLeft,
+      pomodoroCount: STATE.pomodoroCount,
+    }),
+  }).catch(() => {});
+}
+
+// ── 关闭时保存当前进度 ────────────────────────────────────
+async function handleCloseWithSave() {
+  if (!STATE.sessionStart) return;
+
+  const elapsedSec = STATE.totalTime - STATE.timeLeft;
+  if (elapsedSec <= 0) return;
+
+  const minutes = Math.round(elapsedSec / 60);
+  const record = {
+    date: new Date().toISOString().slice(0, 10),
+    start_time: STATE.sessionStart,
+    duration_minutes: minutes,
+    status: 'completed',
+    tag: STATE.selectedTag ? STATE.selectedTag.name : '',
+  };
+
+  STATE.isRunning = false;
+  if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+
+  await API.createRecord(record);
 }
 
 function stopTimer() {
@@ -428,6 +470,7 @@ function switchToMode(newMode) {
   STATE.timeLeft = getDurations()[newMode];
   STATE.totalTime = STATE.timeLeft;
   updateTimerDisplay();
+  syncTimerState();
 }
 
 function resetTimerState() {
@@ -437,6 +480,7 @@ function resetTimerState() {
   STATE.totalTime = STATE.timeLeft;
   setTagsLocked(false);
   updateTimerDisplay();
+  syncTimerState();
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1653,6 +1697,54 @@ function bindEvents() {
       }
     }, 300);
   });
+
+  // ── 自定义标题栏按钮 ─────────────────────────────────
+  document.getElementById('btn-minimize').addEventListener('click', () => {
+    if (window.pywebview) {
+      window.pywebview.api.minimize();
+    }
+  });
+
+  document.getElementById('btn-close').addEventListener('click', () => {
+    if (STATE.isRunning) {
+      // 计时中 → 弹出选择
+      document.getElementById('close-modal').classList.add('show');
+    } else {
+      // 未计时 → 直接关闭
+      if (window.pywebview) {
+        window.pywebview.api.close_app();
+      } else {
+        window.close();
+      }
+    }
+  });
+
+  // ── 关闭弹窗按钮 ─────────────────────────────────────
+  document.getElementById('btn-close-save').addEventListener('click', async () => {
+    if (STATE.isRunning && STATE.sessionStart) {
+      await handleCloseWithSave();
+    }
+    document.getElementById('close-modal').classList.remove('show');
+    if (window.pywebview) {
+      window.pywebview.api.close_app();
+    }
+  });
+
+  document.getElementById('btn-close-minimize').addEventListener('click', () => {
+    document.getElementById('close-modal').classList.remove('show');
+    if (window.pywebview) {
+      syncTimerState();  // 同步状态给迷你窗
+      window.pywebview.api.show_mini();
+      window.pywebview.api.minimize();
+    }
+  });
+
+  // 点击遮罩关闭弹窗
+  document.getElementById('close-modal').addEventListener('click', e => {
+    if (e.target === e.currentTarget) {
+      e.currentTarget.classList.remove('show');
+    }
+  });
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1687,6 +1779,7 @@ async function init() {
     reflectionStars: $('reflection-stars'),
     reflectionInput: $('reflection-input'),
     confettiContainer: $('confetti-container'),
+    closeModal: $('close-modal'),
   };
 
   await loadSettingsToForm();
@@ -1714,7 +1807,34 @@ async function init() {
     }
   });
 
+  // ── 启动画面 ─────────────────────────────────────────
+  showSplash();
+
   console.log('🍅 番茄钟 v3 已就绪！');
+}
+
+// ── 启动画面 ────────────────────────────────────────────────
+function showSplash() {
+  const quotes = [
+    '专注当下，未来自然来',
+    '每一个番茄，都是对自己的承诺',
+    '深度工作，从此刻开始',
+    '心无旁骛，方能致远',
+    '最好的投资，是投资自己的时间',
+    '不积跬步，无以至千里',
+    '今天的努力，是明天的底气',
+    '静下心来，世界都是你的',
+    '番茄虽小，坚持就是力量',
+    '专注 25 分钟，改变每一天',
+  ];
+  const quoteEl = document.getElementById('splash-quote');
+  if (quoteEl) {
+    quoteEl.textContent = quotes[Math.floor(Math.random() * quotes.length)];
+  }
+  setTimeout(() => {
+    const splash = document.getElementById('splash-screen');
+    if (splash) splash.classList.add('fade-out');
+  }, 1800);
 }
 
 document.addEventListener('DOMContentLoaded', init);
