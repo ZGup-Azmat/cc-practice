@@ -75,16 +75,33 @@
 /* ── 全局重置 ───────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+html {
+  background: transparent;
+}
+
 body {
   font-family: "Microsoft YaHei UI", "PingFang SC", "Helvetica Neue", sans-serif;
-  background: var(--bg);
+  background: transparent;
   color: var(--text);
   min-height: 100vh;
   display: flex;
   flex-direction: column;
   align-items: center;
-  transition: background var(--transition), color var(--transition);
   -webkit-font-smoothing: antialiased;
+}
+
+/* Electron 无边框窗口圆角包裹层 */
+#app-root {
+  width: 100%;
+  min-height: 100vh;
+  background: var(--bg);
+  border-radius: 14px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  transition: background var(--transition);
+  box-shadow: 0 0 0 1px rgba(255,255,255,0.06); /* 微妙的窗口边界 */
 }
 
 /* ── 自定义标题栏 ───────────────────────────────────────── */
