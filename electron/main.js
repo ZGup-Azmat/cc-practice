@@ -30,9 +30,8 @@ let isQuitting = false;
 // ── 路径 ──────────────────────────────────────────────────
 const isDev = !app.isPackaged;
 const rootDir = isDev ? path.join(__dirname, '..') : process.resourcesPath;
-const staticDir = isDev ? path.join(rootDir, 'static') : path.join(rootDir, 'static');
+const staticDir = path.join(rootDir, 'static');
 const iconPath = path.join(staticDir, 'icon.png');
-const icoPath = path.join(staticDir, 'tomato.ico');
 
 // ── Flask 生命周期 ────────────────────────────────────────
 
@@ -210,8 +209,6 @@ function setupIPC() {
 
   ipcMain.handle('show-mini', () => {
     showMiniWindow();
-    // 迷你窗显示时隐藏主窗口（最小化到后台）
-    if (mainWindow) mainWindow.minimize();
   });
 
   ipcMain.handle('hide-mini', () => {

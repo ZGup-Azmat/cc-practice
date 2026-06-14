@@ -20,6 +20,3 @@ ipcRenderer.on('request-close', () => {
   const btnClose = document.getElementById('btn-close');
   if (btnClose) btnClose.click();
 });
-
-// 通知主进程渲染进程已就绪
-ipcRenderer.send('renderer-ready');
