@@ -152,6 +152,7 @@ def mini():
     return app.send_static_file('mini.html')
 
 # 计时器状态（供迷你窗轮询）
+_TIMER_STATE_KEYS = ('isRunning', 'timeLeft', 'totalTime', 'mode', 'selectedTag')
 _timer_state = {
     'isRunning': False,
     'timeLeft': 25 * 60,
@@ -167,7 +168,7 @@ def api_get_timer_state():
 @app.route('/api/timer-state', methods=['PUT'])
 def api_update_timer_state():
     data = request.get_json() or {}
-    for k in ('isRunning', 'timeLeft', 'totalTime', 'mode', 'selectedTag'):
+    for k in _TIMER_STATE_KEYS:
         if k in data:
             _timer_state[k] = data[k]
     return jsonify({'ok': True})
@@ -792,7 +793,7 @@ class Api:
         """主窗口同步状态到服务端"""
         global _timer_state
         if state:
-            for k in ('isRunning', 'timeLeft', 'totalTime', 'mode', 'selectedTag'):
+            for k in _TIMER_STATE_KEYS:
                 if k in state:
                     _timer_state[k] = state[k]
 
@@ -903,12 +904,8 @@ def run_desktop_mode():
     flask_thread = threading.Thread(target=_start_flask, daemon=True)
     flask_thread.start()
 
-    # 图标文件
-    icon_path = str(BASE_DIR / 'static' / 'tomato.ico')
-    if not os.path.exists(icon_path):
-        icon_path = None
-
     # 创建无边框原生窗口
+    icon_file = BASE_DIR / 'static' / 'tomato.ico'
     webview.create_window(
         title='Tomato Timer',
         url=f'http://{HOST}:{PORT}',
@@ -919,7 +916,7 @@ def run_desktop_mode():
         easy_drag=True,
         text_select=False,
         js_api=Api(),
-        icon=str(BASE_DIR / 'static' / 'tomato.ico'),
+        **({'icon': str(icon_file)} if icon_file.exists() else {}),
     )
 
     # 窗口关闭时退出

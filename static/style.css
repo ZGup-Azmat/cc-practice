@@ -507,9 +507,6 @@ body {
 .modal-buttons {
   display: flex; justify-content: center; gap: 12px; margin-top: 20px;
 }
-.modal-buttons.vertical {
-  flex-direction: column; align-items: stretch;
-}
 
 /* ════════════════ 启动画面 ════════════════ */
 #splash-screen {
