@@ -190,6 +190,12 @@ const API = {
     const r = await fetch('/api/daily-tasks/history');
     return r.json();
   },
+
+  // ── v4 目标体系 ──────────────────────────────────────────
+  async getGoals() {
+    const r = await fetch('/api/goals');
+    return r.json();
+  },
 };
 
 // ═══════════════════════════════════════════════════════════
@@ -525,6 +531,8 @@ function setTagsLocked(locked) {
 }
 
 async function renderTagChips() {
+  // 计时页标签选择器已移除，安全退出
+  if (!_dom.tagChips) return;
   const allTags = STATE.allTagObjects;
   const container = _dom.tagChips;
 
@@ -730,8 +738,8 @@ async function updateTagSuggestions() {
     }
   }
 
-  // 渲染标签选择器
-  renderTagChips();
+  // 渲染任务页标签管理
+  renderTasksTagMgmt();
 
   // 更新看板筛选下拉
   const select = _dom.dashTagFilter;
@@ -1302,49 +1310,35 @@ const PRESET_COLORS = [
   '#1ABC9C', '#2980B9', '#8E44AD', '#E91E90'
 ];
 
-async function renderTagManagement(providedTags) {
-  const tags = providedTags || await API.getTags();
-  if (!providedTags) STATE.allTagObjects = tags;
+async function renderTasksTagMgmt() {
+  const container = document.getElementById('tasks-tag-mgmt-list');
+  if (!container) return;
 
-  const container = document.getElementById('tag-mgmt-list');
+  const tags = STATE.allTagObjects;
   if (tags.length === 0) {
-    container.innerHTML = '<div class="tag-mgmt-empty">暂无标签，点击下方按钮创建第一个</div>';
+    container.innerHTML = '<div class="tag-mgmt-empty">还没有项目标签</div>';
     return;
   }
 
   container.innerHTML = tags.map(t => `
-    <div class="tag-mgmt-row">
-      <div class="tag-mgmt-info">
-        <span class="tag-mgmt-dot" style="background:${t.color}"></span>
-        ${t.icon ? `<span class="tag-mgmt-icon">${t.icon}</span>` : ''}
-        <span class="tag-mgmt-name">${t.name}</span>
-      </div>
-      <div class="tag-mgmt-actions">
-        <button class="btn-edit-tag" data-id="${t.id}">✏ 编辑</button>
-        <button class="btn-del btn-del-tag" data-id="${t.id}" data-name="${t.name}">✕ 删除</button>
-      </div>
-    </div>
+    <span class="tag-mgmt-chip" data-tag-id="${t.id}">
+      <span class="chip-dot" style="background:${t.color}"></span>
+      ${t.icon || ''} ${t.name}
+      <span class="chip-del" data-tag-id="${t.id}" data-tag-name="${t.name}" title="删除">✕</span>
+    </span>
   `).join('');
 
-  // 绑定编辑按钮
-  container.querySelectorAll('.btn-edit-tag').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id = parseInt(btn.dataset.id);
-      const tag = tags.find(t => t.id === id);
-      if (tag) showTagEditModal(tag);
-    });
-  });
-
-  // 绑定删除按钮
-  container.querySelectorAll('.btn-del-tag').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const id = parseInt(btn.dataset.id);
-      const name = btn.dataset.name;
-      if (confirm(`确定删除标签「${name}」？\n\n删除后历史记录中的标签数据仍会保留，只是此标签将不再出现在选择器中。`)) {
+  // 删除按钮事件
+  container.querySelectorAll('.chip-del').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const id = parseInt(btn.dataset.tagId);
+      const name = btn.dataset.tagName;
+      if (confirm(`确定删除「${name}」？`)) {
         API.deleteTag(id).then(async res => {
           if (res.ok) {
-            await updateTagSuggestions();           // 拉取标签、更新 STATE、渲染 chips
-            renderTagManagement(STATE.allTagObjects); // 复用已加载的数据
+            await updateTagSuggestions();
+            renderTasksTagMgmt();
           } else {
             alert('删除失败: ' + (res.error || '未知错误'));
           }
@@ -1352,6 +1346,20 @@ async function renderTagManagement(providedTags) {
       }
     });
   });
+
+  // 点击编辑
+  container.querySelectorAll('.tag-mgmt-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const id = parseInt(chip.dataset.tagId);
+      const tag = STATE.allTagObjects.find(t => t.id === id);
+      if (tag) showTagEditModal(tag);
+    });
+  });
+}
+
+async function renderTagManagement(providedTags) {
+  // 已迁移到任务页的 renderTasksTagMgmt
+  renderTasksTagMgmt();
 }
 
 function showTagEditModal(tag) {
@@ -1577,6 +1585,9 @@ function switchView(view) {
   }
   if (view === 'tasks') {
     loadDailyTasks();
+  }
+  if (view === 'goals') {
+    loadGoals();
   }
 }
 
@@ -1829,6 +1840,54 @@ function navigateTasksDate(delta) {
   loadDailyTasks();
 }
 
+
+// ═══════════════════════════════════════════════════════════
+//  v5 目标体系 模块
+// ═══════════════════════════════════════════════════════════
+
+async function loadGoals() {
+  try {
+    const data = await API.getGoals();
+    renderGoals(data.goals || []);
+  } catch (e) {
+    document.getElementById('goals-container').innerHTML =
+      '<div class="goals-summary">加载失败，请稍后重试</div>';
+  }
+}
+
+function renderGoals(goals) {
+  const container = document.getElementById('goals-container');
+  let totalDone = 0, totalEst = 0;
+  goals.forEach(g => { totalDone += g.donePomo; totalEst += g.totalPomo; });
+  const overallPct = totalEst > 0 ? Math.round(totalDone / totalEst * 100) : 0;
+
+  let html = `<div class="goals-summary">
+    🚀 总体进度：${totalDone} / ${totalEst} 番茄 (${overallPct}%)
+  </div>`;
+
+  goals.forEach(g => {
+    const pctColor = g.pct >= 60 ? '#27AE60' : g.pct >= 30 ? '#E67E22' : '#E74C3C';
+    html += `<div class="goal-card" style="border-left-color:${g.color}">
+      <div class="goal-card-header">
+        <div class="goal-card-title">
+          <span class="goal-card-icon">${g.icon}</span>
+          <span>${g.name}</span>
+        </div>
+        <span class="goal-card-pct" style="color:${pctColor}">${g.pct}%</span>
+      </div>
+      <div class="goal-card-progress">
+        <div class="goal-card-fill" style="width:${g.pct}%;background:${g.color}"></div>
+      </div>
+      <div class="goal-card-stats">
+        <span>已完成 ${g.donePomo} 番茄</span>
+        <span>目标 ${g.totalPomo} 番茄</span>
+      </div>
+    </div>`;
+  });
+
+  container.innerHTML = html;
+}
+
 // ═══════════════════════════════════════════════════════════
 //  事件绑定
 // ═══════════════════════════════════════════════════════════
@@ -1925,7 +1984,7 @@ function bindEvents() {
   document.getElementById('btn-save-settings').addEventListener('click', saveSettings);
 
   // v3: 标签新增按钮
-  document.getElementById('btn-add-tag').addEventListener('click', () => showTagEditModal(null));
+  document.getElementById('btn-add-tag-inline').addEventListener('click', () => showTagEditModal(null));
 
   // v3: 数据管理按钮
   document.getElementById('btn-export-json').addEventListener('click', () => API.exportData('json'));
@@ -2076,6 +2135,9 @@ async function init() {
     }
     if (STATE.currentView === 'tasks') {
       loadDailyTasks();
+    }
+    if (STATE.currentView === 'goals') {
+      loadGoals();
     }
     // 始终刷新目标进度
     updateDailyGoal();

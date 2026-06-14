@@ -30,6 +30,7 @@
     <button class="nav-tab active" data-view="timer">⏱ 计时</button>
     <button class="nav-tab" data-view="dashboard">📊 看板</button>
     <button class="nav-tab" data-view="tasks">📋 任务</button>
+    <button class="nav-tab" data-view="goals">🎯 目标</button>
     <button class="nav-tab" data-view="settings">⚙ 设置</button>
   </div>
   <div class="nav-actions">
@@ -61,15 +62,7 @@
     <div class="goal-percent" id="goal-percent">0%</div>
   </div>
 
-  <!-- 标签/项目选择器 -->
-  <div class="tag-selector">
-    <label>📂 标签 / 项目</label>
-    <div class="tag-chips" id="tag-chips">
-      <div class="tag-chips-empty">还没有标签，去「设置 → 标签管理」创建吧~</div>
-    </div>
-  </div>
-
-  <!-- 当前专注标签 -->
+  <!-- 当前专注任务 -->
   <div class="active-tag-display" id="active-tag-display" style="display:none">
     <span class="active-tag-dot" id="active-tag-dot"></span>
     <span class="active-tag-name" id="active-tag-name"></span>
@@ -250,6 +243,17 @@
     </div>
   </div>
 
+  <!-- 已有标签快速管理 -->
+  <div class="tasks-tag-mgmt" id="tasks-tag-mgmt">
+    <div class="tasks-tag-mgmt-header">
+      <span>📂 已有项目</span>
+      <button class="btn btn-sm btn-secondary" id="btn-add-tag-inline">＋ 新建</button>
+    </div>
+    <div class="tasks-tag-mgmt-list" id="tasks-tag-mgmt-list">
+      <div class="tag-mgmt-empty">还没有项目标签</div>
+    </div>
+  </div>
+
   <div class="tasks-progress-wrap">
     <div class="tasks-progress-bar">
       <div class="tasks-progress-fill" id="tasks-progress-fill" style="width:0%"></div>
@@ -262,6 +266,13 @@
 
   <div id="tasks-container">
     <div class="tasks-empty" id="tasks-empty">📭 今天还没有待办计划<br><small>对我说"今日待办"来生成一份吧~</small></div>
+  </div>
+</div>
+
+<!-- ════════════════ 目标页 ════════════════ -->
+<div id="view-goals" class="view">
+  <div id="goals-container">
+    <div class="goals-summary" id="goals-summary">加载中...</div>
   </div>
 </div>
 
@@ -293,13 +304,6 @@
       <label>每日学习目标（小时）</label>
       <input type="number" id="set-daily-goal" min="0.5" max="24" step="0.5" value="2">
     </div>
-  </div>
-
-  <!-- 标签管理 -->
-  <div class="settings-card" id="tag-mgmt-card">
-    <h3>🏷 标签管理</h3>
-    <div class="tag-mgmt-list" id="tag-mgmt-list"></div>
-    <button class="btn btn-primary btn-sm" id="btn-add-tag" style="margin-top:12px">＋ 新增标签</button>
   </div>
 
   <!-- 数据管理 -->

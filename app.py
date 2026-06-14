@@ -81,12 +81,14 @@ def init_db():
         db.execute("ALTER TABLE tags ADD COLUMN target_pomodoros INTEGER DEFAULT NULL")
     if 'tag_type' not in cols:
         db.execute("ALTER TABLE tags ADD COLUMN tag_type TEXT DEFAULT 'daily'")
-    # 迁移历史 tag 名到 tags 表
-    db.execute("""
-        INSERT OR IGNORE INTO tags (name, color, icon, created_at)
-        SELECT DISTINCT tag, '#27AE60', '', datetime('now')
-        FROM pomodoro_records WHERE tag != ''
-    """)
+    # 仅在 tags 表为空时迁移历史 tag 名（避免复活已删除标签）
+    existing_count = db.execute("SELECT COUNT(*) FROM tags").fetchone()[0]
+    if existing_count == 0:
+        db.execute("""
+            INSERT OR IGNORE INTO tags (name, color, icon, created_at)
+            SELECT DISTINCT tag, '#27AE60', '', datetime('now')
+            FROM pomodoro_records WHERE tag != ''
+        """)
     defaults = {
         'work_duration':          '25',
         'short_break_duration':   '5',
@@ -753,6 +755,55 @@ def api_data_path():
         'db_path': str(DB_PATH),
         'folder': str(BASE_DIR),
     })
+
+# ── 目标体系 ──────────────────────────────────────────
+
+GOALS = [
+    {"id": 1, "name": "GPA 3.7+ 重修翻盘", "icon": "🎓", "totalPomo": 2000, "color": "#E74C3C",
+     "keywords": ["概率论", "高数", "线性代数", "统计", "算法", "基因组", "C语言", "Linux", "细胞", "芯片", "测序", "模式识别", "遗传", "肿瘤", "高等数学", "多元统计", "生物信息学算法"]},
+    {"id": 2, "name": "雅思 7.5+", "icon": "🇬🇧", "totalPomo": 600, "color": "#2980B9",
+     "keywords": ["雅思", "英语", "词汇", "听力", "口语", "写作", "剑雅", "阅读", "单词"]},
+    {"id": 3, "name": "6个 GitHub 项目", "icon": "💻", "totalPomo": 480, "color": "#27AE60",
+     "keywords": ["GitHub", "项目", "Python", "代码", "编程", "CNN", "PyTorch", "Spring", "DICOM", "RNA-seq", "scRNA", "Drug", "Multi-omics"]},
+    {"id": 4, "name": "GRE 320+", "icon": "🧠", "totalPomo": 400, "color": "#8E44AD",
+     "keywords": ["GRE", "词汇", "数学", "刷题"]},
+    {"id": 5, "name": "科研实验室深度参与", "icon": "🔬", "totalPomo": 300, "color": "#E67E22",
+     "keywords": ["课题组", "科研", "论文", "实验", "实验室", "导师"]},
+    {"id": 6, "name": "LeetCode 200题", "icon": "💼", "totalPomo": 200, "color": "#1ABC9C",
+     "keywords": ["LeetCode", "刷题", "算法", "数据结构", "DP"]},
+    {"id": 7, "name": "体脂 15%–20%", "icon": "🏃", "totalPomo": 200, "color": "#E91E90",
+     "keywords": ["健身", "运动", "跑步", "快走", "训练", "拉伸"]},
+    {"id": 8, "name": "德语 A2", "icon": "🇩🇪", "totalPomo": 200, "color": "#F1C40F",
+     "keywords": ["德语", "German"]},
+    {"id": 9, "name": "阅读积累", "icon": "📖", "totalPomo": 100, "color": "#34495E",
+     "keywords": ["阅读", "读书", "穷查理"]},
+]
+
+@app.route('/api/goals', methods=['GET'])
+def api_get_goals():
+    """返回目标体系 + 当前进度"""
+    db = get_db()
+    goals_with_progress = []
+    for g in GOALS:
+        # 统计已完成番茄数：匹配任意关键词的 tag 的总 completed 番茄数
+        done = 0
+        for kw in g['keywords']:
+            row = db.execute("""
+                SELECT COALESCE(SUM(duration_minutes), 0) AS total_min
+                FROM pomodoro_records
+                WHERE status = 'completed' AND tag LIKE ?
+            """, (f'%{kw}%',)).fetchone()
+            done += row['total_min']
+        # 按 25min 一个番茄换算
+        done_pomo = round(done / 25)
+        pct = min(100, round(done_pomo / g['totalPomo'] * 100, 1)) if g['totalPomo'] > 0 else 0
+        goals_with_progress.append({
+            **g,
+            'donePomo': done_pomo,
+            'pct': pct,
+        })
+    return jsonify({'goals': goals_with_progress})
+
 
 # ── 每日待办任务 API ─────────────────────────────────────
 
