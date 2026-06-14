@@ -4,3 +4,7 @@ build/
 dist/
 pomodoro.db
 *.spec
+CLAUDE.md
+*.png
+!static/icon.png
+!static/tomato.ico
