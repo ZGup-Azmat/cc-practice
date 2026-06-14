@@ -13,6 +13,8 @@ const STATE = {
   pomodoroCount: 0,      // 今日已完成番茄数
   sessionStart: null,    // 当前 session 开始时间 ISO
   completedSession: null,// 刚结束的 session 数据（供反思用）
+  tickStartedAt: 0,      // 本轮计时开始的 Date.now()（墙钟时间戳）
+  tickBaseLeft: 0,       // 本轮计时开始时的 timeLeft
 
   // UI
   currentView: 'timer',
@@ -283,10 +285,16 @@ function updateTimerDisplay() {
 function timerTick() {
   if (!STATE.isRunning) return;
 
-  if (STATE.timeLeft > 0) {
-    STATE.timeLeft--;
+  // 基于墙钟时间戳计算剩余秒数，不受浏览器后台节流影响
+  const elapsed = Math.floor((Date.now() - STATE.tickStartedAt) / 1000);
+  const newLeft = Math.max(0, STATE.tickBaseLeft - elapsed);
+
+  if (newLeft !== STATE.timeLeft) {
+    STATE.timeLeft = newLeft;
     updateTimerDisplay();
-  } else {
+  }
+
+  if (STATE.timeLeft <= 0) {
     onTimerEnd();
   }
 }
@@ -300,6 +308,8 @@ function startTimer() {
 
   STATE.isRunning = true;
   STATE.sessionStart = STATE.sessionStart || new Date().toISOString();
+  STATE.tickStartedAt = Date.now();
+  STATE.tickBaseLeft = STATE.timeLeft;
 
   // 保存 lastTag 到 settings
   if (STATE.selectedTag) {
@@ -406,6 +416,8 @@ function switchToMode(newMode) {
   STATE.mode = newMode;
   STATE.isRunning = false;
   STATE.sessionStart = null;
+  STATE.tickStartedAt = 0;
+  STATE.tickBaseLeft = 0;
   if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
 
   STATE.timeLeft = getDurations()[newMode];
@@ -416,6 +428,8 @@ function switchToMode(newMode) {
 function resetTimerState() {
   STATE.isRunning = false;
   STATE.sessionStart = null;
+  STATE.tickStartedAt = 0;
+  STATE.tickBaseLeft = 0;
   if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
 
   STATE.timeLeft = getDurations()[STATE.mode];
@@ -886,8 +900,29 @@ function attachHmTooltip(container) {
   };
 
   container.onmousemove = e => {
-    _hmTooltip.style.left = (e.clientX + 14) + 'px';
-    _hmTooltip.style.top = (e.clientY - 50) + 'px';
+    // 边界检测：tooltip 靠近视口边缘时翻转到另一侧，避免被裁剪
+    const rect = _hmTooltip.getBoundingClientRect();
+    const tw = rect.width || 200;   // 首次渲染前用预估值
+    const th = rect.height || 60;
+
+    let left = e.clientX + 14;
+    let top = e.clientY - 50;
+
+    // 右侧超出 → 翻转到鼠标左侧
+    if (left + tw > window.innerWidth - 8) {
+      left = e.clientX - tw - 14;
+    }
+    // 顶部超出 → 翻转到鼠标下方
+    if (top < 8) {
+      top = e.clientY + 20;
+    }
+    // 底部超出 → 上移
+    if (top + th > window.innerHeight - 8) {
+      top = window.innerHeight - th - 8;
+    }
+
+    _hmTooltip.style.left = left + 'px';
+    _hmTooltip.style.top = top + 'px';
   };
 
   container.onmouseout = e => {
@@ -1670,6 +1705,13 @@ async function init() {
     // 始终刷新目标进度
     updateDailyGoal();
   }, 30000);
+
+  // 页面切回时立即同步计时器显示，避免后台节流导致的延迟
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && STATE.isRunning) {
+      timerTick();
+    }
+  });
 
   console.log('🍅 番茄钟 v3 已就绪！');
 }

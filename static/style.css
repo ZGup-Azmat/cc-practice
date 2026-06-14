@@ -32,6 +32,8 @@
   --nav-shadow:    0 1px 4px rgba(0,0,0,.06);
 
   --ring-bg:       #E8E8E8;
+  --tooltip-bg:     #1E293B;
+  --tooltip-text:   #F1F5F9;
 
   --radius:        12px;
   --radius-sm:     8px;
@@ -57,7 +59,7 @@
   --orange:        #D29922;
   --orange-light:  #3D2E00;
 
-  --hm-empty:      #161B22;
+  --hm-empty:      #1D2633;
   --hm-l1:         #0E4429;
   --hm-l2:         #006D32;
   --hm-l3:         #26A641;
@@ -66,6 +68,8 @@
   --nav-bg:        #161B22;
   --nav-shadow:    0 1px 4px rgba(0,0,0,.4);
   --ring-bg:       #21262D;
+  --tooltip-bg:     #0D1117;
+  --tooltip-text:   #C9D1D9;
 }
 
 /* ── 全局重置 ───────────────────────────────────────────── */
@@ -354,7 +358,7 @@ body {
 /* 热力图悬浮提示 */
 .hm-tooltip {
   position: fixed; pointer-events: none; z-index: 200;
-  background: #1E293B; color: #F1F5F9;
+  background: var(--tooltip-bg); color: var(--tooltip-text);
   padding: 8px 14px; border-radius: var(--radius-sm);
   font-size: 13px; line-height: 1.5;
   box-shadow: 0 4px 16px rgba(0,0,0,.3);
@@ -384,7 +388,7 @@ body {
 #trend-canvas { width: 100%; height: 300px; }
 .chart-tooltip {
   position: absolute; pointer-events: none;
-  background: #1E293B; color: #F1F5F9;
+  background: var(--tooltip-bg); color: var(--tooltip-text);
   padding: 8px 14px; border-radius: var(--radius-sm);
   font-size: 13px; box-shadow: 0 4px 16px rgba(0,0,0,.3);
   opacity: 0; transition: opacity 0.15s; z-index: 200;
@@ -666,7 +670,7 @@ body {
 .mini-bar-tip {
   position: absolute; bottom: 100%; left: 50%;
   transform: translateX(-50%);
-  background: #1E293B; color: #F1F5F9;
+  background: var(--tooltip-bg); color: var(--tooltip-text);
   padding: 3px 8px; border-radius: 4px;
   font-size: 11px; white-space: nowrap;
   pointer-events: none; opacity: 0; transition: opacity 0.15s;
