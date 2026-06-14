@@ -6,5 +6,6 @@ pomodoro.db
 *.spec
 CLAUDE.md
 *.png
+picture/
 !static/icon.png
 !static/tomato.ico
