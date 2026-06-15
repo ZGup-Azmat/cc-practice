@@ -282,7 +282,12 @@ function updateTimerDisplay() {
   const s = STATE.settings;
 
   _dom.timerText.textContent = fmtTime(timeLeft);
-  _dom.timerMode.textContent = isRunning ? getModeLabel(mode) : (mode === 'work' ? '🍅 准备开始' : getModeLabel(mode));
+  // 有任务时钟表下方显示任务名，否则显示模式标签
+  if (STATE.selectedTag) {
+    _dom.timerMode.textContent = (isRunning ? '🍅 ' : '▶ ') + STATE.selectedTag.name;
+  } else {
+    _dom.timerMode.textContent = isRunning ? getModeLabel(mode) : (mode === 'work' ? '🍅 准备开始' : getModeLabel(mode));
+  }
 
   // 阶段文字
   const beforeLong = parseInt(s.pomodoros_before_long || 4);
@@ -1794,6 +1799,28 @@ async function startTaskTimer(taskIndex) {
   if (!task || task.done) return;
   STATE.activeTaskIndex = taskIndex;
 
+  // 如果计时器正在跑，先保存旧任务进度再切换
+  if (STATE.isRunning && STATE.sessionStart) {
+    const elapsedSec = STATE.totalTime - STATE.timeLeft;
+    if (elapsedSec >= 300) {
+      const minutes = Math.round(elapsedSec / 60);
+      await API.createRecord({
+        date: new Date().toISOString().slice(0, 10),
+        start_time: STATE.sessionStart,
+        duration_minutes: minutes,
+        status: 'completed',
+        tag: STATE.selectedTag ? STATE.selectedTag.name : '',
+      });
+      checkActiveTaskProgress();
+    }
+    // 重置计时状态
+    STATE.isRunning = false;
+    if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+    STATE.sessionStart = null;
+    STATE.tickStartedAt = 0;
+    STATE.tickBaseLeft = 0;
+  }
+
   // Ensure tag exists
   let tag = STATE.allTagObjects.find(t => t.name === task.name && (t.tag_type === 'once' || t.tag_type === 'daily' || t.tag_type === 'long'));
   if (!tag) {
@@ -1812,12 +1839,15 @@ async function startTaskTimer(taskIndex) {
     STATE.lastTag = tag.name;
     await API.updateSettings({ last_tag: tag.name });
     if (STATE.mode !== 'work') switchToMode('work');
-    updateTimerDisplay();
   }
 
   switchView('timer');
-  // Auto-start the timer
-  setTimeout(() => startTimer(), 300);
+  // 必须在 switchView 之后刷新，确保 DOM 可见
+  updateTimerDisplay();
+  // Auto-start the timer (确保 isRunning 为 false 才启动)
+  if (!STATE.isRunning) {
+    setTimeout(() => startTimer(), 200);
+  }
 }
 
 async function checkActiveTaskProgress() {
