@@ -283,11 +283,7 @@ function updateTimerDisplay() {
 
   _dom.timerText.textContent = fmtTime(timeLeft);
   // 有任务时钟表下方显示任务名，否则显示模式标签
-  if (STATE.selectedTag) {
-    _dom.timerMode.textContent = (isRunning ? '🍅 ' : '▶ ') + STATE.selectedTag.name;
-  } else {
-    _dom.timerMode.textContent = isRunning ? getModeLabel(mode) : (mode === 'work' ? '🍅 准备开始' : getModeLabel(mode));
-  }
+  _dom.timerMode.textContent = isRunning ? getModeLabel(mode) : (mode === 'work' ? '🍅 准备开始' : getModeLabel(mode));
 
   // 阶段文字
   const beforeLong = parseInt(s.pomodoros_before_long || 4);
@@ -547,32 +543,6 @@ function setTagsLocked(locked) {
   _dom.tagChips.querySelectorAll('.tag-chip').forEach(c => c.classList.toggle('locked', locked));
 }
 
-
-
-function selectTagChip(chip) {
-  const tagId = parseInt(chip.dataset.tagId);
-  const existing = document.querySelector('.tag-chip.selected');
-  if (existing && existing.dataset.tagId === String(tagId)) {
-    // 再次点击取消选中
-    STATE.selectedTag = null;
-    existing.classList.remove('selected');
-    updateActiveTagDisplay();
-    return;
-  }
-
-  // 取消之前的选中
-  document.querySelectorAll('.tag-chip.selected').forEach(c => c.classList.remove('selected'));
-
-  // 选中当前
-  chip.classList.add('selected');
-  STATE.selectedTag = {
-    id: tagId,
-    name: chip.dataset.tagName,
-    color: chip.dataset.tagColor,
-    icon: chip.dataset.tagIcon,
-  };
-  updateActiveTagDisplay();
-}
 
 function updateActiveTagDisplay() {
   const display = _dom.activeTagDisplay;
@@ -1254,7 +1224,6 @@ const PRESET_COLORS = [
 ];
 
 
-
 function showTagEditModal(tag) {
   const modal = document.getElementById('tag-edit-modal');
   const title = document.getElementById('tag-edit-title');
@@ -1685,12 +1654,12 @@ async function startTaskTimer(taskIndex) {
       });
     }
     // 彻底停止旧计时器
-    _forceStopTimer();
+    _stopTimer();
     await checkActiveTaskProgress();
   }
 
   // 2. 彻底重置状态
-  _forceStopTimer();
+  _stopTimer();
   STATE.activeTaskIndex = taskIndex;
   STATE.selectedTag = null;
 
@@ -1720,27 +1689,12 @@ async function startTaskTimer(taskIndex) {
 
   // 6. 切计时页 + 显示任务名
   switchView('timer');
-  // 强制显示任务名（直接操作 DOM，不等 updateTimerDisplay）
-  if (_dom.activeTagDisplay && STATE.selectedTag) {
-    _dom.activeTagDisplay.style.display = 'flex';
-    _dom.activeTagDot.style.background = STATE.selectedTag.color || '#E74C3C';
-    _dom.activeTagName.textContent = STATE.selectedTag.name;
-  }
   updateTimerDisplay();
 
   // 7. 延迟启动
   setTimeout(() => {
     if (!STATE.isRunning) startTimer();
   }, 150);
-}
-
-// 辅助：强制停止计时器（比 _stopTimer 更彻底，也重置 selectedTag）
-function _forceStopTimer() {
-  STATE.isRunning = false;
-  STATE.sessionStart = null;
-  STATE.tickStartedAt = 0;
-  STATE.tickBaseLeft = 0;
-  if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
 }
 
 async function checkActiveTaskProgress() {
@@ -1764,7 +1718,6 @@ function navigateTasksDate(delta) {
   STATE.tasksDate = STATE.tasksDates[newIdx];
   loadDailyTasks();
 }
-
 
 // ═══════════════════════════════════════════════════════════
 //  v5 目标体系 模块
