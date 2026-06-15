@@ -309,6 +309,17 @@ function updateTimerDisplay() {
     _dom.btnStop.disabled = (timeLeft === totalTime);
     _dom.btnSkip.disabled = false;
   }
+
+  // 当前任务名
+  if (_dom.activeTagDisplay) {
+    if (STATE.selectedTag) {
+      _dom.activeTagDisplay.style.display = 'flex';
+      _dom.activeTagDot.style.background = STATE.selectedTag.color;
+      _dom.activeTagName.textContent = STATE.selectedTag.name;
+    } else {
+      _dom.activeTagDisplay.style.display = 'none';
+    }
+  }
 }
 
 function timerTick() {
@@ -1656,7 +1667,7 @@ async function submitQuickCreate() {
       STATE.lastTag = tag.name;
       await API.updateSettings({ last_tag: tag.name });
       if (STATE.mode !== 'work') switchToMode('work');
-      updateActiveTagDisplay(); updateTimerDisplay();
+      updateTimerDisplay();
       switchView('timer');
       startTimer();
     }
@@ -1801,7 +1812,6 @@ async function startTaskTimer(taskIndex) {
     STATE.lastTag = tag.name;
     await API.updateSettings({ last_tag: tag.name });
     if (STATE.mode !== 'work') switchToMode('work');
-    updateActiveTagDisplay();
     updateTimerDisplay();
   }
 
