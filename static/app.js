@@ -282,8 +282,13 @@ function updateTimerDisplay() {
   const s = STATE.settings;
 
   _dom.timerText.textContent = fmtTime(timeLeft);
-  // 有任务时钟表下方显示任务名，否则显示模式标签
-  _dom.timerMode.textContent = isRunning ? getModeLabel(mode) : (mode === 'work' ? '🍅 准备开始' : getModeLabel(mode));
+  // 钟表上：有任务显示任务名，否则显示模式标签
+  if (STATE.selectedTag) {
+    const prefix = isRunning ? '🍅 ' : '▶ ';
+    _dom.timerMode.textContent = prefix + STATE.selectedTag.name;
+  } else {
+    _dom.timerMode.textContent = isRunning ? getModeLabel(mode) : (mode === 'work' ? '🍅 准备开始' : getModeLabel(mode));
+  }
 
   // 阶段文字
   const beforeLong = parseInt(s.pomodoros_before_long || 4);
@@ -416,7 +421,7 @@ async function handleCloseWithSave() {
   await API.createRecord(record);
 }
 
-function stopTimer() {
+async function stopTimer() {
   if (!STATE.sessionStart) return;
 
   const elapsedSec = STATE.totalTime - STATE.timeLeft;
@@ -427,24 +432,17 @@ function stopTimer() {
   // ≥5 分钟才保留，不足丢弃
   if (elapsedSec >= 300) {
     const minutes = Math.round(elapsedSec / 60);
-    const record = {
+    await API.createRecord({
       date: new Date().toISOString().slice(0, 10),
       start_time: STATE.sessionStart,
       duration_minutes: minutes,
       status: 'completed',
       tag: STATE.selectedTag ? STATE.selectedTag.name : '',
-    };
-
-    API.createRecord(record).then(() => {
-      checkActiveTaskProgress();
-      resetTimerState();
-      refreshAllData();
     });
-  } else {
-    // 不足5分钟，直接丢弃
-    resetTimerState();
-    refreshAllData();
+    await checkActiveTaskProgress();
   }
+  resetTimerState();
+  refreshAllData();
 }
 
 function skipBreak() {
@@ -1638,6 +1636,7 @@ function updateTasksProgress(done, total) {
 }
 
 async function startTaskTimer(taskIndex) {
+  try {
   const task = STATE.dailyTasks.find(t => t.index === taskIndex);
   if (!task || task.done) return;
 
@@ -1695,6 +1694,12 @@ async function startTaskTimer(taskIndex) {
   setTimeout(() => {
     if (!STATE.isRunning) startTimer();
   }, 150);
+  } catch (e) {
+    console.error('startTaskTimer failed:', e);
+    _stopTimer();
+    STATE.activeTaskIndex = null;
+    refreshAllData();
+  }
 }
 
 async function checkActiveTaskProgress() {
