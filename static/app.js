@@ -547,80 +547,7 @@ function setTagsLocked(locked) {
   _dom.tagChips.querySelectorAll('.tag-chip').forEach(c => c.classList.toggle('locked', locked));
 }
 
-async function _renderTagChipsUnused() {
-  // 已废弃：计时页标签选择器已移除
-  if (!_dom.tagChips) return;
-  const allTags = STATE.allTagObjects;
-  const container = _dom.tagChips;
 
-  // 差异检测（含进度数据）
-  const fp = allTags.map(t => `${t.id}:${t.name}:${t.color}:${t.icon}:${t.today_done}:${t.all_done}:${t.target_pomodoros}:${t.tag_type}`).join(',')
-           + '|sel=' + (STATE.selectedTag ? STATE.selectedTag.id : 'null')
-           + '|run=' + STATE.isRunning;
-  if (container._fp === fp && allTags.length > 0) return;
-  container._fp = fp;
-
-  if (allTags.length === 0) {
-    container._fp = null;
-    container.innerHTML = '<div class="tag-chips-empty">还没有标签，去「设置 → 标签管理」创建吧~</div>';
-    return;
-  }
-
-  // 过滤：一次性标签已完成则隐藏
-  const visible = allTags.filter(t => {
-    if (t.tag_type === 'once' && t.target_pomodoros && (t.all_done || 0) >= t.target_pomodoros) return false;
-    return true;
-  });
-
-  if (visible.length === 0) {
-    container._fp = null;
-    container.innerHTML = '<div class="tag-chips-empty">所有目标已完成 🎉，去「设置 → 标签管理」创建新标签吧~</div>';
-    return;
-  }
-
-  container.innerHTML = visible.map(t => {
-    const iconStr = t.icon ? `<span class="tag-chip-icon">${t.icon}</span>` : '';
-    const selClass = (STATE.selectedTag && STATE.selectedTag.id === t.id) ? ' selected' : '';
-    const lockedClass = STATE.isRunning ? ' locked' : '';
-    // 进度（计算一次，复用）
-    let progressHtml = '';
-    let doneClass = '';
-    if (t.target_pomodoros) {
-      const done = t.tag_type === 'once' ? (t.all_done || 0) : (t.today_done || 0);
-      const isDone = done >= t.target_pomodoros;
-      progressHtml = isDone
-        ? '<span class="tag-chip-progress">✓</span>'
-        : `<span class="tag-chip-progress">${done}/${t.target_pomodoros}</span>`;
-      if (isDone) doneClass = ' done';
-    }
-    return `<div class="tag-chip${selClass}${lockedClass}${doneClass}" data-tag-id="${t.id}" data-tag-name="${t.name}" data-tag-color="${t.color}" data-tag-icon="${t.icon || ''}">
-      <span class="tag-chip-dot" style="background:${t.color}"></span>
-      ${iconStr}
-      <span>${t.name}</span>
-      ${progressHtml}
-    </div>`;
-  }).join('');
-
-  // 事件委托
-  container.onclick = e => {
-    if (STATE.isRunning) return;
-    const chip = e.target.closest('.tag-chip');
-    if (!chip || chip.classList.contains('done')) return;
-    selectTagChip(chip);
-  };
-
-  container.ondblclick = e => {
-    if (STATE.isRunning) return;
-    const chip = e.target.closest('.tag-chip');
-    if (!chip || chip.classList.contains('done')) return;
-    selectTagChip(chip);
-    if (STATE.mode === 'work') {
-      startTimer();
-    }
-  };
-
-  updateActiveTagDisplay();
-}
 
 function selectTagChip(chip) {
   const tagId = parseInt(chip.dataset.tagId);
@@ -755,8 +682,7 @@ async function updateTagSuggestions() {
     }
   }
 
-  // 渲染任务页标签管理
-  renderTasksTagMgmt();
+  // 标签管理已迁移，渲染调用保留为 no-op
 
   // 更新看板筛选下拉
   const select = _dom.dashTagFilter;
@@ -1327,57 +1253,7 @@ const PRESET_COLORS = [
   '#1ABC9C', '#2980B9', '#8E44AD', '#E91E90'
 ];
 
-async function renderTasksTagMgmt() {
-  const container = document.getElementById('tasks-tag-mgmt-list');
-  if (!container) return;
 
-  const tags = STATE.allTagObjects;
-  if (tags.length === 0) {
-    container.innerHTML = '<div class="tag-mgmt-empty">还没有项目标签</div>';
-    return;
-  }
-
-  container.innerHTML = tags.map(t => `
-    <span class="tag-mgmt-chip" data-tag-id="${t.id}">
-      <span class="chip-dot" style="background:${t.color}"></span>
-      ${t.icon || ''} ${t.name}
-      <span class="chip-del" data-tag-id="${t.id}" data-tag-name="${t.name}" title="删除">✕</span>
-    </span>
-  `).join('');
-
-  // 删除按钮事件
-  container.querySelectorAll('.chip-del').forEach(btn => {
-    btn.addEventListener('click', e => {
-      e.stopPropagation();
-      const id = parseInt(btn.dataset.tagId);
-      const name = btn.dataset.tagName;
-      if (confirm(`确定删除「${name}」？`)) {
-        API.deleteTag(id).then(async res => {
-          if (res.ok) {
-            await updateTagSuggestions();
-            renderTasksTagMgmt();
-          } else {
-            alert('删除失败: ' + (res.error || '未知错误'));
-          }
-        });
-      }
-    });
-  });
-
-  // 点击编辑
-  container.querySelectorAll('.tag-mgmt-chip').forEach(chip => {
-    chip.addEventListener('click', () => {
-      const id = parseInt(chip.dataset.tagId);
-      const tag = STATE.allTagObjects.find(t => t.id === id);
-      if (tag) showTagEditModal(tag);
-    });
-  });
-}
-
-async function renderTagManagement(providedTags) {
-  // 已迁移到任务页的 renderTasksTagMgmt
-  renderTasksTagMgmt();
-}
 
 function showTagEditModal(tag) {
   const modal = document.getElementById('tag-edit-modal');
@@ -1455,7 +1331,6 @@ function showTagEditModal(tag) {
     if (result.ok) {
       modal.classList.remove('show');
       await updateTagSuggestions();
-      renderTasksTagMgmt();
     } else {
       alert('操作失败: ' + (result.error || '未知错误'));
     }
@@ -1519,7 +1394,6 @@ async function loadSettingsToForm() {
   applyTimerSettings();
 
   // v3: 加载标签管理和数据路径
-  renderTasksTagMgmt();
   loadDataPath();
 }
 
@@ -1797,31 +1671,30 @@ function updateTasksProgress(done, total) {
 async function startTaskTimer(taskIndex) {
   const task = STATE.dailyTasks.find(t => t.index === taskIndex);
   if (!task || task.done) return;
-  STATE.activeTaskIndex = taskIndex;
 
-  // 如果计时器正在跑，先保存旧任务进度再切换
+  // 1. 如果计时器正在跑，先保存旧进度
   if (STATE.isRunning && STATE.sessionStart) {
     const elapsedSec = STATE.totalTime - STATE.timeLeft;
     if (elapsedSec >= 300) {
-      const minutes = Math.round(elapsedSec / 60);
       await API.createRecord({
         date: new Date().toISOString().slice(0, 10),
         start_time: STATE.sessionStart,
-        duration_minutes: minutes,
+        duration_minutes: Math.round(elapsedSec / 60),
         status: 'completed',
         tag: STATE.selectedTag ? STATE.selectedTag.name : '',
       });
-      checkActiveTaskProgress();
     }
-    // 重置计时状态
-    STATE.isRunning = false;
-    if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
-    STATE.sessionStart = null;
-    STATE.tickStartedAt = 0;
-    STATE.tickBaseLeft = 0;
+    // 彻底停止旧计时器
+    _forceStopTimer();
+    await checkActiveTaskProgress();
   }
 
-  // Ensure tag exists
+  // 2. 彻底重置状态
+  _forceStopTimer();
+  STATE.activeTaskIndex = taskIndex;
+  STATE.selectedTag = null;
+
+  // 3. 创建或查找标签
   let tag = STATE.allTagObjects.find(t => t.name === task.name && (t.tag_type === 'once' || t.tag_type === 'daily' || t.tag_type === 'long'));
   if (!tag) {
     const result = await API.createTag({
@@ -1834,20 +1707,40 @@ async function startTaskTimer(taskIndex) {
     if (result.ok) { await updateTagSuggestions(); tag = STATE.allTagObjects.find(t => t.id === result.id); }
   }
 
+  // 4. 选中标签
   if (tag) {
     STATE.selectedTag = { id: tag.id, name: tag.name, color: tag.color, icon: tag.icon || '' };
     STATE.lastTag = tag.name;
     await API.updateSettings({ last_tag: tag.name });
-    if (STATE.mode !== 'work') switchToMode('work');
   }
 
+  // 5. 切换到工作模式
+  if (STATE.mode !== 'work') switchToMode('work');
+  else { STATE.timeLeft = getDurations().work; STATE.totalTime = STATE.timeLeft; }
+
+  // 6. 切计时页 + 显示任务名
   switchView('timer');
-  // 必须在 switchView 之后刷新，确保 DOM 可见
-  updateTimerDisplay();
-  // Auto-start the timer (确保 isRunning 为 false 才启动)
-  if (!STATE.isRunning) {
-    setTimeout(() => startTimer(), 200);
+  // 强制显示任务名（直接操作 DOM，不等 updateTimerDisplay）
+  if (_dom.activeTagDisplay && STATE.selectedTag) {
+    _dom.activeTagDisplay.style.display = 'flex';
+    _dom.activeTagDot.style.background = STATE.selectedTag.color || '#E74C3C';
+    _dom.activeTagName.textContent = STATE.selectedTag.name;
   }
+  updateTimerDisplay();
+
+  // 7. 延迟启动
+  setTimeout(() => {
+    if (!STATE.isRunning) startTimer();
+  }, 150);
+}
+
+// 辅助：强制停止计时器（比 _stopTimer 更彻底，也重置 selectedTag）
+function _forceStopTimer() {
+  STATE.isRunning = false;
+  STATE.sessionStart = null;
+  STATE.tickStartedAt = 0;
+  STATE.tickBaseLeft = 0;
+  if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
 }
 
 async function checkActiveTaskProgress() {
@@ -2026,8 +1919,6 @@ function bindEvents() {
   document.getElementById('btn-save-settings').addEventListener('click', saveSettings);
 
   // v3: 标签新增按钮
-  document.getElementById('btn-add-tag-inline').addEventListener('click', () => showTagEditModal(null));
-
   // v3: 数据管理按钮
   document.getElementById('btn-export-json').addEventListener('click', () => API.exportData('json'));
   document.getElementById('btn-export-csv').addEventListener('click', () => API.exportData('csv'));

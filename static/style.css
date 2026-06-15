@@ -1008,43 +1008,6 @@ body {
 }
 .tasks-quick-create-panel input[type="number"]:focus { border-color: var(--accent); }
 
-/* ── 任务页标签管理 ───────────────────────────────── */
-.tasks-tag-mgmt {
-  background: var(--card-bg); border-radius: var(--radius);
-  padding: 12px 16px; margin-top: 12px;
-  box-shadow: var(--card-shadow);
-  transition: all var(--transition);
-}
-.tasks-tag-mgmt-header {
-  display: flex; justify-content: space-between; align-items: center;
-  margin-bottom: 10px;
-}
-.tasks-tag-mgmt-header span {
-  font-size: 13px; font-weight: 600; color: var(--text-secondary);
-}
-.tasks-tag-mgmt-list {
-  display: flex; flex-wrap: wrap; gap: 6px;
-}
-.tag-mgmt-chip {
-  display: flex; align-items: center; gap: 6px;
-  padding: 4px 10px; border: 1px solid var(--border);
-  border-radius: 16px; background: var(--bg);
-  font-size: 12px; color: var(--text);
-  transition: all 0.2s ease;
-}
-.tag-mgmt-chip:hover { border-color: var(--accent); }
-.tag-mgmt-chip .chip-dot {
-  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
-}
-.tag-mgmt-chip .chip-del {
-  margin-left: 2px; cursor: pointer; color: var(--text-muted);
-  font-size: 12px; line-height: 1; padding: 0 2px;
-}
-.tag-mgmt-chip .chip-del:hover { color: var(--accent); }
-.tag-mgmt-empty {
-  color: var(--text-muted); font-size: 12px; padding: 4px 0;
-}
-
 /* ── 任务开始按钮 ─────────────────────────────────── */
 .task-start-btn {
   width: 32px; height: 32px; border-radius: 50%;
