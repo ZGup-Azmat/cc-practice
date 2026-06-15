@@ -527,6 +527,7 @@ function resetTimerState() {
 // ═══════════════════════════════════════════════════════════
 
 function setTagsLocked(locked) {
+  if (!_dom.tagChips) return;  // 标签选择器已从计时页移除
   _dom.tagChips.querySelectorAll('.tag-chip').forEach(c => c.classList.toggle('locked', locked));
 }
 
