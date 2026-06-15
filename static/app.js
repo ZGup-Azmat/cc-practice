@@ -40,7 +40,8 @@ const STATE = {
   tasksDate: new Date().toISOString().slice(0, 10),
   dailyTasks: [],
   tasksDates: [],
-  activeTaskIndex: null,   // 当前选中/计时的任务索引
+  activeTaskIndex: null,   // 当前正在计时的任务索引
+  taskCardPomoEl: null,    // 任务卡片上的番茄数 DOM 元素（用于实时更新倒计时）
 };
 
 const RING_CIRCUMFERENCE = 2 * Math.PI * 130; // ~816.8
@@ -265,6 +266,20 @@ function triggerConfetti() {
 
 let timerInterval = null;
 
+
+// 同步更新任务卡片上的实时倒计时
+function updateTaskCardTimer() {
+  try {
+    const el = document.getElementById('task-card-timer-' + STATE.activeTaskIndex);
+    if (el) {
+      const m = Math.floor(STATE.timeLeft / 60);
+      const s = STATE.timeLeft % 60;
+      el.textContent = '⏱ ' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+      el.style.color = 'var(--accent)';
+      el.style.fontWeight = '700';
+    }
+  } catch(_) {}
+}
 function getModeLabel(mode) {
   return { work: '🍅 专注工作中', short_break: '☕ 短休息', long_break: '🌴 长休息' }[mode] || '';
 }
@@ -338,6 +353,7 @@ function timerTick() {
   if (newLeft !== STATE.timeLeft) {
     STATE.timeLeft = newLeft;
     updateTimerDisplay();
+    updateTaskCardTimer();
   }
 
   if (STATE.timeLeft <= 0) {
@@ -442,6 +458,7 @@ async function stopTimer() {
     await checkActiveTaskProgress();
   }
   resetTimerState();
+  STATE.activeTaskIndex = null;
   refreshAllData();
 }
 
@@ -530,6 +547,12 @@ function resetTimerState() {
   setTagsLocked(false);
   updateTimerDisplay();
   syncTimerState();
+  // 清除任务卡片计时器
+  if (STATE.activeTaskIndex !== null) {
+    const el = document.getElementById('task-card-timer-' + STATE.activeTaskIndex);
+    if (el) { el.textContent = ''; el.id = ''; }
+    STATE.activeTaskIndex = null;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1586,6 +1609,12 @@ function renderDailyTasks() {
             ? '<span class="task-card-pomo done-pomo">🍅 ✓</span>'
             : '<span class="task-card-pomo">🍅 ' + (t.donePomodoros || 0) + '/' + t.pomodoroCount + '</span>')
         : '';
+      // 活跃任务卡片显示实时计时器
+      const isActive = STATE.activeTaskIndex === t.index && STATE.isRunning;
+      let pomoHtml = pomoInfo;
+      if (isActive) {
+        pomoHtml = '<span class="task-card-pomo" id="task-card-timer-' + t.index + '">⏱ 25:00</span>';
+      }
       const btnHtml = t.done
         ? '<span class="task-start-btn done-btn" title="已完成">✓</span>'
         : '<button class="task-start-btn" data-task-index="' + t.index + '" title="开始专注">▶</button>';
@@ -1686,8 +1715,23 @@ async function startTaskTimer(taskIndex) {
   if (STATE.mode !== 'work') switchToMode('work');
   else { STATE.timeLeft = getDurations().work; STATE.totalTime = STATE.timeLeft; }
 
+  // 清除旧卡片计时器
+  if (STATE.activeTaskIndex !== null) {
+    const oldEl = document.getElementById('task-card-timer-' + STATE.activeTaskIndex);
+    if (oldEl) { oldEl.textContent = ''; oldEl.id = ''; }
+  }
+
   // 6. 切计时页 + 显示任务名
   switchView('timer');
+  // 直接硬写 SVG 文本，不依赖 updateTimerDisplay 内部逻辑
+  if (STATE.selectedTag) {
+    try {
+      _dom.timerMode.textContent = '▶ ' + STATE.selectedTag.name;
+      _dom.activeTagDisplay.style.display = 'flex';
+      _dom.activeTagDot.style.background = STATE.selectedTag.color || '#E74C3C';
+      _dom.activeTagName.textContent = STATE.selectedTag.name;
+    } catch(_) {}
+  }
   updateTimerDisplay();
 
   // 7. 延迟启动
