@@ -459,6 +459,8 @@ async function stopTimer() {
   }
   resetTimerState();
   STATE.activeTaskIndex = null;
+  STATE.selectedTag = null;
+  updateTimerDisplay();
   refreshAllData();
 }
 
@@ -1537,8 +1539,7 @@ async function submitQuickCreate() {
       await API.updateSettings({ last_tag: tag.name });
       if (STATE.mode !== 'work') switchToMode('work');
       updateTimerDisplay();
-      switchView('timer');
-      startTimer();
+      alert('已创建「' + name + '」——去任务卡片点 ▶ 开始吧');
     }
   } else {
     alert('创建失败: ' + (result.error || '未知错误'));
@@ -1625,7 +1626,7 @@ function renderDailyTasks() {
       html += '<div class="task-card-domain">' + t.domain + ' · ' + t.estTime + '</div>';
       html += '</div>';
       html += '<div class="task-card-meta">';
-      html += pomoInfo;
+      html += pomoHtml;
       html += btnHtml;
       html += '</div></div>';
     });
@@ -1665,7 +1666,6 @@ function updateTasksProgress(done, total) {
 }
 
 async function startTaskTimer(taskIndex) {
-  try {
   const task = STATE.dailyTasks.find(t => t.index === taskIndex);
   if (!task || task.done) return;
 
@@ -1738,12 +1738,6 @@ async function startTaskTimer(taskIndex) {
   setTimeout(() => {
     if (!STATE.isRunning) startTimer();
   }, 150);
-  } catch (e) {
-    console.error('startTaskTimer failed:', e);
-    _stopTimer();
-    STATE.activeTaskIndex = null;
-    refreshAllData();
-  }
 }
 
 async function checkActiveTaskProgress() {
